@@ -35,7 +35,7 @@ public class InMemoryVectorSearchService {
             String indicatorName,
             String tags,
             String remark,
-            List<Float> embedding,
+            float[] embedding,
             String unit,
             String frequency,
             String tableId
@@ -55,7 +55,7 @@ public class InMemoryVectorSearchService {
             try {
                 // 生成向量
                 EmbeddingResponse response = embeddingModel.embedForResponse(List.of(searchText));
-                List<Float> embedding = response.getResults().get(0).getOutput();
+                float[] embedding = response.getResults().get(0).getOutput();
                 
                 IndicatorVector vector = new IndicatorVector(
                         indicator.getIndicatorId(),
@@ -88,7 +88,7 @@ public class InMemoryVectorSearchService {
         
         // 1. 向量检索
         EmbeddingResponse response = embeddingModel.embedForResponse(List.of(query));
-        List<Float> queryEmbedding = response.getResults().get(0).getOutput();
+        float[] queryEmbedding = response.getResults().get(0).getOutput();
         
         List<ScoredIndicator> scored = new ArrayList<>();
         
@@ -149,15 +149,15 @@ public class InMemoryVectorSearchService {
     /**
      * 余弦相似度
      */
-    private double cosineSimilarity(List<Float> a, List<Float> b) {
+    private double cosineSimilarity(float[] a, float[] b) {
         double dot = 0.0;
         double normA = 0.0;
         double normB = 0.0;
         
-        for (int i = 0; i < a.size(); i++) {
-            dot += a.get(i) * b.get(i);
-            normA += a.get(i) * a.get(i);
-            normB += b.get(i) * b.get(i);
+        for (int i = 0; i < a.length; i++) {
+            dot += a[i] * b[i];
+            normA += a[i] * a[i];
+            normB += b[i] * b[i];
         }
         
         return dot / (Math.sqrt(normA) * Math.sqrt(normB));
