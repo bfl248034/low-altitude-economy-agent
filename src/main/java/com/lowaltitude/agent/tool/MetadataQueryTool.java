@@ -4,6 +4,7 @@ import com.lowaltitude.agent.entity.DataSourceConfig;
 import com.lowaltitude.agent.entity.DataTableConfig;
 import com.lowaltitude.agent.entity.DimensionValue;
 import com.lowaltitude.agent.entity.Indicator;
+import com.lowaltitude.agent.entity.LatestTimeConfig;
 import com.lowaltitude.agent.service.MetadataService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -11,76 +12,170 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+/**
+ * 元数据查询工具 - 查询指标、维度、表结构等元数据
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class MetadataQueryTool {
-
+    
     private final MetadataService metadataService;
-
-    @Tool(name = "searchIndicators", description = "根据关键词模糊搜索指标")
-    public String searchIndicators(
-            @ToolParam(description = "搜索关键词，如'薪资'、'企业'、'招聘'") String keyword) {
-        log.info("Searching indicators with keyword: {}", keyword);
-        List<Indicator> indicators = metadataService.searchIndicators(keyword);
+    
+    /**
+     * 获取指标完整元数据
+     */
+    @Tool(name = "getIndicatorMeta", description = "根据指标ID获取完整元数据信息")
+    public Map<String, Object> getIndicatorMeta(
+            @ToolParam(description = "指标ID，如I_RPA_ICN_RAE_SALARY_AMOUNT") String indicatorId) {
         
-        if (indicators.isEmpty()) {
-            return "未找到匹配的指标";
+        log.info("Getting indicator meta for: {}", indicatorId);
+        
+        Optional<Indicator> indicator = metadataService.getIndicatorById(indicatorId);
+        
+        if (indicator.isEmpty()) {
+            return Map.of("error", "指标不存在: " + indicatorId);
         }
         
-        return indicators.stream()
-                .map(i -> String.format("指标ID: %s, 名称: %s, 单位: %s, 表ID: %s",
-                        i.getIndicatorId(), i.getIndicatorName(), i.getUnit(), i.getTableId()))
-                .collect(Collectors.joining("\n"));
+        Indicator ind = indicator.get();
+        Map<String, Object> result = new HashMap<>();
+        result.put("indicatorId", ind.getIndicatorId());
+        result.put("indicatorName", ind.getIndicatorName());
+        result.put("unit", ind.getUnit());
+        result.put("frequency", ind.getFrequency());
+        result.put("tableId", ind.getTableId());
+        result.put("tags", ind.getTags());
+        result.put("remark", ind.getRemark());
+        
+        return result;
     }
-
-    @Tool(name = "findRegionByName", description = "根据名称匹配地区编码")
-    public String findRegionByName(
-            @ToolParam(description = "地区名称，如'北京'、'上海'") String name) {
-        Optional<DimensionValue> region = metadataService.findRegionByName(name);
-        return region.map(r -> String.format("地区编码: %s, 名称: %s", r.getValueCode(), r.getValueName()))
-                .orElse("未找到匹配的地区");
+    
+    /**
+     * 获取指标最新时间配置
+     */
+    @Tool(name = "getLatestTime", description = "获取指标的最新数据时间配置")
+    public Map<String, Object> getLatestTime(
+            @ToolParam(description = "指标ID") String indicatorId) {
+        
+        log.info("Getting latest time for indicator: {}", indicatorId);
+        
+        Optional<LatestTimeConfig> config = metadataService.getLatestTime(indicatorId);
+        
+        if (config.isEmpty()) {
+            // 返回默认值
+            return Map.of(
+                "indicatorId", indicatorId,
+                "frequency", "M",
+                "latestTimeId", "202406",
+                "latestDate", "2024-06-30"
+            );
+        }
+        
+        LatestTimeConfig cfg = config.get();
+        Map<String, Object> result = new HashMap<>();
+        result.put("indicatorId", cfg.getIndicatorId());
+        result.put("frequency", cfg.getFrequency());
+        result.put("latestTimeId", cfg.getLatestTimeId());
+        result.put("latestDate", cfg.getLatestDate());
+        
+        return result;
     }
-
-    @Tool(name = "findEduLevelByName", description = "根据名称匹配学历编码")
-    public String findEduLevelByName(
-            @ToolParam(description = "学历名称，如'本科'、'硕士'") String name) {
-        Optional<DimensionValue> edu = metadataService.findEduLevelByName(name);
-        return edu.map(e -> String.format("学历编码: %s, 名称: %s", e.getValueCode(), e.getValueName()))
-                .orElse("未找到匹配的学历");
+    
+    /**
+     * 获取表的维度值列表（不包含时间和地区）
+     */
+    @Tool(name = "getDimensionValues", description = "获取数据表的维度值列表，可排除时间和地区维度")
+    public List<Map<String, Object>> getDimensionValues(
+            @ToolParam(description = "表ID") String tableId,
+            @ToolParam(description = "是否排除时间和地区维度") boolean excludeTimeRegion) {
+        
+        log.info("Getting dimension values for table: {}, excludeTimeRegion: {}", 
+                tableId, excludeTimeRegion);
+        
+        List<DimensionValue> values = metadataService.getDimensionValuesByTable(tableId, excludeTimeRegion);
+        
+        return values.stream().map(v -> {
+            Map<String, Object> map = new HashMap<>();
+            map.put("dimensionId", v.getDimensionId());
+            map.put("dimensionName", v.getDimensionName());
+            map.put("valueCode", v.getValueCode());
+            map.put("valueName", v.getValueName());
+            map.put("synonyms", v.getSynonyms());
+            map.put("isDefault", v.getIsDefault());
+            return map;
+        }).collect(Collectors.toList());
     }
-
-    @Tool(name = "getDataTable", description = "根据表ID获取数据表配置信息")
-    public String getDataTable(
-            @ToolParam(description = "表ID，如'ads_rpa_w_icn_recruit_salary_amount_m'") String tableId) {
+    
+    /**
+     * 获取表结构信息
+     */
+    @Tool(name = "getTableSchema", description = "获取数据表的完整结构信息")
+    public Map<String, Object> getTableSchema(
+            @ToolParam(description = "表ID") String tableId) {
+        
+        log.info("Getting table schema for: {}", tableId);
+        
         Optional<DataTableConfig> table = metadataService.getDataTable(tableId);
-        return table.map(t -> String.format(
-                "表ID: %s, 表名: %s, 数据源: %s, 时间列: %s, 地区列: %s, 数值列: %s",
-                t.getTableId(), t.getTableName(), t.getSourceId(),
-                t.getTimeColumn(), t.getRegionColumn(), t.getValueColumn()))
-                .orElse("未找到表配置");
+        
+        if (table.isEmpty()) {
+            return Map.of("error", "表不存在: " + tableId);
+        }
+        
+        DataTableConfig t = table.get();
+        Map<String, Object> result = new HashMap<>();
+        result.put("tableId", t.getTableId());
+        result.put("tableName", t.getTableName());
+        result.put("sourceId", t.getSourceId());
+        result.put("timeColumn", t.getTimeColumn());
+        result.put("regionColumn", t.getRegionColumn());
+        result.put("regionLevelColumn", t.getRegionLevelColumn());
+        result.put("valueColumn", t.getValueColumn());
+        result.put("indicatorColumn", t.getIndicatorColumn());
+        
+        return result;
     }
-
-    @Tool(name = "getDataSource", description = "根据数据源ID获取数据源配置")
-    public String getDataSource(
-            @ToolParam(description = "数据源ID，如'ds_h2_demo'") String sourceId) {
-        Optional<DataSourceConfig> ds = metadataService.getDataSource(sourceId);
-        return ds.map(d -> String.format(
-                "数据源ID: %s, 名称: %s, 类型: %s, 主机: %s, 端口: %d, 数据库: %s",
-                d.getSourceId(), d.getSourceName(), d.getSourceType(),
-                d.getHost(), d.getPort(), d.getDatabaseName()))
-                .orElse("未找到数据源配置");
+    
+    /**
+     * 获取数据源配置
+     */
+    @Tool(name = "getDataSource", description = "获取数据源配置信息")
+    public Map<String, Object> getDataSource(
+            @ToolParam(description = "数据源ID") String sourceId) {
+        
+        log.info("Getting data source: {}", sourceId);
+        
+        Optional<DataSourceConfig> source = metadataService.getDataSource(sourceId);
+        
+        if (source.isEmpty()) {
+            return Map.of("error", "数据源不存在: " + sourceId);
+        }
+        
+        DataSourceConfig s = source.get();
+        Map<String, Object> result = new HashMap<>();
+        result.put("sourceId", s.getSourceId());
+        result.put("sourceName", s.getSourceName());
+        result.put("sourceType", s.getSourceType());
+        result.put("host", s.getHost());
+        result.put("port", s.getPort());
+        result.put("databaseName", s.getDatabaseName());
+        
+        return result;
     }
-
-    @Tool(name = "getDimensionValueName", description = "根据维度ID和编码获取中文名称")
-    public String getDimensionValueName(
-            @ToolParam(description = "维度ID，如'region'、'edu_level'") String dimensionId,
-            @ToolParam(description = "编码值，如'110000'") String valueCode) {
-        String name = metadataService.getDimensionValueName(dimensionId, valueCode);
-        return String.format("%s: %s", valueCode, name);
+    
+    /**
+     * 翻译维度编码为中文名称
+     */
+    @Tool(name = "translateCodes", description = "将维度编码翻译为中文名称")
+    public String translateCodes(
+            @ToolParam(description = "维度ID，如region、edu_level") String dimensionId,
+            @ToolParam(description = "编码值，如110000、3") String valueCode) {
+        
+        return metadataService.getDimensionValueName(dimensionId, valueCode);
     }
 }

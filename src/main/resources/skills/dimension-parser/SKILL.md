@@ -1,110 +1,146 @@
 ---
 name: dimension-parser
 description: |
-  维度解析技能：使用LLM直接抽取用户查询中的维度条件。
-  输入：用户查询 + 指标信息 + 最新时间 + 维度值列表
-  输出：解析后的地区、时间、其他维度值
+  解析用户查询中的维度条件。LLM直接抽取，不给地区/时间维度值。
+  使用 Tool：getIndicatorMeta → getLatestTime → getDimensionValues → llmParseDimensions
 ---
 
 # 维度解析技能 (Dimension Parser)
 
 ## 功能
-从用户查询中解析并抽取维度条件。
+从用户查询中解析时间、地区、其他维度条件。
 
 ## 输入
-调用LLM时提供以下上下文：
-
-### 1. 用户查询
-原始用户输入，如："北京近6个月本科招聘薪资"
-
-### 2. 指标信息
-- 指标名称
-- 指标ID
-- 频率（D/W/M/Q/Y）
-- 数据表ID
-
-### 3. 最新数据时间
-从latest_time_config表获取：
-- latestTimeId: "202406"
-- latestDate: "2024-06-30"
-- frequency: "M"
-
-### 4. 维度值列表
-从db_data_dimension + dimension_values表获取：
-- 维度名称和字段名
-- 所有可选值及其编码
-- 默认值标记
-- 同义词
-
-**不包含**：地区维度和时间维度（由LLM直接推理）
-
-## 解析任务
-
-### 1. 地区解析
-将自然语言地区转换为编码和级别：
-| 用户说法 | region_code | region_name | region_level |
-|---------|------------|-------------|--------------|
-| 全国 | 0 | 全国 | 1 |
-| 北京 | 110000 | 北京 | 2 |
-| 各省 | - | 各省 | 2 |
-| 分省份 | - | 分省份 | 2 |
-
-### 2. 时间解析
-基于频率和最新时间计算：
-| 频率 | 用户说法 | 计算方式 | 结果 |
-|------|---------|---------|------|
-| M | 近6个月 | latestDate-6个月 | 2024-01-01 至 2024-06-30 |
-| M | 2024年 | 当年全年 | 2024-01-01 至 2024-12-31 |
-| Q | 近4季度 | latestDate-12个月 | 2023-07-01 至 2024-06-30 |
-
-时间格式：yyyy-MM-dd
-
-### 3. 其他维度解析
-从维度值列表中匹配：
-- 精确匹配："本科" → edu_level = "3"
-- 同义词匹配："研究生" → edu_level = "4"（硕士）
-- 多值匹配："本科和硕士" → edu_level IN ("3", "4")
-- 默认值：未提及的维度使用db_data_dimension中配置的默认值
-
-### 4. 分析类型识别
-| 关键词 | 类型 | 说明 |
-|--------|------|------|
-| 无 | SINGLE | 查询具体值 |
-| 趋势、走势 | TREND | 时序分析 |
-| 排名、排行 | RANKING | 排序分析 |
-| 对比、比较 | COMPARISON | 对比分析 |
-| 不同、分、各 | CROSS_SECTION | 截面分析 |
-
-## 输出
-
 ```json
 {
+  "userQuery": "北京近6个月本科招聘薪资",
+  "indicators": [
+    {
+      "indicatorId": "I_RPA_ICN_RAE_SALARY_AMOUNT",
+      "indicatorName": "招聘岗位平均薪酬",
+      "frequency": "M",
+      "tableId": "ads_rpa_w_icn_recruit_salary_amount_m"
+    }
+  ]
+}
+```
+
+## 输出
+```json
+{
+  "timeRange": {
+    "start": "2024-01-01",
+    "end": "2024-06-30",
+    "timeColumn": "time_id",
+    "originalText": "近6个月"
+  },
   "region": {
     "code": "110000",
     "name": "北京",
-    "level": 2
-  },
-  "timeRange": {
-    "start": "2024-01-01",
-    "end": "2024-06-30"
+    "level": 2,
+    "column": "region_id",
+    "levelColumn": "region_level_num"
   },
   "dimensions": [
     {
       "dimensionId": "edu_level",
-      "columnName": "edu_level",
+      "dimensionName": "学历",
+      "column": "edu_level",
       "values": ["3"],
       "valueNames": ["本科"],
-      "useDefault": false,
+      "isDefault": false,
       "isCrossSection": false
     }
   ],
   "analysisType": "TREND",
-  "reasoning": "用户询问北京近6个月本科薪资趋势"
+  "reasoning": "解析出北京（地区）、近6个月（时间）、本科（学历）、趋势分析"
 }
 ```
 
-## 截面分析特殊处理
-当分析类型为CROSS_SECTION时：
-- 目标维度不指定具体值（或排除默认值）
-- SQL生成时添加条件：`dimension_column != 'default_value'`
-- 示例："不同学历的招聘数量" → `edu_level != '0'`（排除"不限"）
+## 执行流程
+
+### Step 1: 获取指标元数据
+调用 `getIndicatorMeta(indicatorId)`
+- 获取指标频率（D/W/M/Q/Y）
+- 获取数据表ID
+
+### Step 2: 获取最新时间
+调用 `getLatestTime(indicatorId)`
+- 获取该指标最新数据时间
+- 示例: latestTimeId=202406, latestDate=2024-06-30
+
+### Step 3: 获取维度值列表
+调用 `getDimensionValues(tableId, excludeTimeRegion=true)`
+- 获取该表的所有非时间、非地区维度值
+- 包含：维度编码、维度名称、可选值列表、默认值
+
+### Step 4: LLM解析维度
+调用 `llmParseDimensions(userQuery, context)`
+
+**输入Context结构**:
+```json
+{
+  "userQuery": "北京近6个月本科招聘薪资",
+  "indicator": {
+    "name": "招聘岗位平均薪酬",
+    "frequency": "M",
+    "latestTimeId": "202406",
+    "latestDate": "2024-06-30"
+  },
+  "dimensions": [
+    {
+      "dimensionId": "edu_level",
+      "dimensionName": "学历",
+      "column": "edu_level",
+      "values": [
+        {"code": "0", "name": "不限", "isDefault": true},
+        {"code": "3", "name": "本科"},
+        {"code": "4", "name": "硕士"}
+      ]
+    }
+  ]
+}
+```
+
+**LLM任务**:
+1. **地区解析**: 自然语言 → region_code + region_name + region_level
+   - "北京" → code: "110000", name: "北京", level: 2
+   - "全国" → code: "0", name: "全国", level: 1
+   - "各省" → 只指定 level: 2，不指定具体code
+
+2. **时间计算**: 基于频率和最新时间
+   - 频率M + "近6个月" + latestDate=2024-06-30
+   - → start: "2024-01-01", end: "2024-06-30"
+
+3. **维度匹配**: 从提供的维度值列表中匹配
+   - "本科" → code: "3", name: "本科"
+   - 支持多值: "本科和硕士" → ["3", "4"]
+   - 未提及的使用默认值
+
+4. **分析类型识别**:
+   - SINGLE: 无特殊关键词
+   - TREND: 趋势、走势、变化
+   - RANKING: 排名、排行、第几
+   - COMPARISON: 对比、比较、vs
+   - CROSS_SECTION: 不同、分、各、按
+
+## 特殊处理
+
+### 截面分析 (CROSS_SECTION)
+当用户说"不同学历的招聘数量"：
+- `isCrossSection: true`
+- SQL生成时: `edu_level != '0'` (排除默认值"不限")
+- 返回该维度所有非默认值的数据
+
+### 地区级别
+数据表有 `region_level_num` 字段：
+- 1: 全国级
+- 2: 省级
+- 3: 市级
+- 4: 区县级
+
+用户说"各省排名" → level=2，不指定具体region_id
+
+### 多维度值
+用户说"本科和硕士" → values: ["3", "4"]
+SQL生成时用 IN 条件

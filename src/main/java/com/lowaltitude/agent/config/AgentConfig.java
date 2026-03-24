@@ -9,8 +9,7 @@ import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
 import com.alibaba.cloud.ai.graph.skills.registry.classpath.ClasspathSkillRegistry;
 import com.alibaba.cloud.ai.graph.skills.registry.SkillRegistry;
 import com.lowaltitude.agent.config.datasource.DynamicDataSourceManager;
-import com.lowaltitude.agent.service.query.DataQueryOrchestrator;
-import lombok.extern.slf4j.Slf4j;
+import com.lowaltitude.agent.tool.*;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -55,6 +54,8 @@ public class AgentConfig {
                 .build();
     }
 
+    // ==================== Agent定义 ====================
+
     @Bean
     public ReactAgent chatAgent(ChatModel chatModel) {
         return ReactAgent.builder()
@@ -74,38 +75,59 @@ public class AgentConfig {
     }
 
     @Bean
-    public ReactAgent dataQueryAgent(ChatModel chatModel,
-                                     SkillsAgentHook skillsAgentHook,
-                                     DataQueryOrchestrator dataQueryOrchestrator) {
+    public ReactAgent dataQueryAgent(
+            ChatModel chatModel,
+            SkillsAgentHook skillsAgentHook,
+            TextProcessingTool textProcessingTool,
+            MetadataQueryTool metadataQueryTool,
+            VectorSearchTool vectorSearchTool,
+            SqlExecutionTool sqlExecutionTool) {
+        
         return ReactAgent.builder()
                 .name("data_query_agent")
                 .model(chatModel)
                 .description("专业处理低空经济数据查询")
                 .instruction("""
-                        你是低空经济数据查询专家。
+                        你是低空经济数据查询专家。严格按以下流程执行：
                         
-                        查询流程：
-                        1. 意图分析：判断是数据查询还是闲聊
-                        2. 指标匹配：使用向量检索+BM25+同义词+LLM精排找到最匹配的指标
-                        3. 维度解析：LLM直接抽取地区、时间、其他维度
-                        4. SQL生成：基于指标和维度生成查询SQL
-                        5. 执行查询：在对应数据源执行
-                        6. 结果格式化：返回人类可读的格式
+                        ## 执行流程
                         
-                        支持的查询类型：
-                        - 单指标查询："北京招聘薪资"
-                        - 多指标查询："招聘薪资和岗位数量"
-                        - 趋势分析："近6个月薪资趋势"
-                        - 排名分析："各省招聘数量排名"
-                        - 对比分析："本科和硕士薪资对比"
-                        - 截面分析："不同学历的招聘数量"
+                        Step 1: 意图分析
+                        - 调用 read_skill("intent-analyzer")
+                        - 如果是CHAT，直接回复
+                        - 如果是DATA_QUERY，继续下一步
                         
-                        注意：
-                        - 数据表已聚合，不需要GROUP BY
-                        - 支持多指标（IN条件）
-                        - 支持多维度值（IN条件）
-                        - 支持地区级别筛选（全国/省级/市级）
+                        Step 2: 指标匹配
+                        - 调用 read_skill("indicator-matcher")
+                        - 使用Tool：extractKeywords → expandSynonyms → vectorSearch → llmRerank
+                        - 获取匹配的指标列表
+                        
+                        Step 3: 维度解析
+                        - 调用 read_skill("dimension-parser")
+                        - 使用Tool：getIndicatorMeta → getLatestTime → getDimensionValues → llmParseDimensions
+                        - 获取解析后的维度（时间、地区、其他维度）
+                        
+                        Step 4: SQL生成
+                        - 调用 read_skill("sql-generator")
+                        - 使用Tool：getTableSchema → getDataSource → buildSql
+                        - 获取生成的SQL
+                        
+                        Step 5: 查询执行
+                        - 调用 read_skill("query-executor")
+                        - 使用Tool：executeOnDataSource → translateCodes → formatNumbers
+                        - 获取查询结果
+                        
+                        Step 6: 结果渲染
+                        - 调用 read_skill("result-renderer")
+                        - 使用Tool：generateSummary → suggestRelatedQueries
+                        - 生成最终回复
+                        
+                        ## 注意事项
+                        - 必须按顺序执行每个步骤
+                        - 每个步骤使用对应的Tool获取数据
+                        - 支持多指标、多维度值、截面分析
                         """)
+                .tools(textProcessingTool, metadataQueryTool, vectorSearchTool, sqlExecutionTool)
                 .hooks(List.of(skillsAgentHook))
                 .saver(new MemorySaver())
                 .build();
@@ -151,10 +173,13 @@ public class AgentConfig {
                 ### data_query_agent
                 - **功能**: 处理低空经济数据查询
                 - **适用场景**: 涉及"招聘"、"薪资"、"企业数量"等具体指标
-                - **特点**: 
-                  - 向量+BM25+同义词+LLM精排进行指标匹配
-                  - LLM直接抽取维度
-                  - 支持多指标、多维度值、截面分析
+                - **执行流程**: 
+                  1. intent-analyzer（意图分析）
+                  2. indicator-matcher（指标匹配：向量+BM25+LLM精排）
+                  3. dimension-parser（维度解析：LLM直接抽取）
+                  4. sql-generator（SQL生成）
+                  5. query-executor（查询执行）
+                  6. result-renderer（结果渲染）
                 
                 ### article_agent
                 - **功能**: 文章检索（开发中）
