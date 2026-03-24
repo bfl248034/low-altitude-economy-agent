@@ -1,5 +1,6 @@
 package com.lowaltitude.agent.service.retrieval;
 
+import com.alibaba.cloud.ai.dashscope.embedding.DashScopeEmbeddingModel;
 import com.lowaltitude.agent.entity.Indicator;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -19,10 +20,10 @@ import java.util.stream.Collectors;
 @Service
 public class InMemoryVectorSearchService {
     
-    private final EmbeddingModel embeddingModel;
+    private final DashScopeEmbeddingModel embeddingModel;
     private final Map<String, IndicatorVector> vectorStore = new ConcurrentHashMap<>();
     
-    public InMemoryVectorSearchService(EmbeddingModel embeddingModel) {
+    public InMemoryVectorSearchService(DashScopeEmbeddingModel embeddingModel) {
         this.embeddingModel = embeddingModel;
     }
     

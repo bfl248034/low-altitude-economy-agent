@@ -2,8 +2,8 @@ package com.lowaltitude.agent.config;
 
 import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
+import com.alibaba.cloud.ai.graph.agent.AgentTool;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
-import com.alibaba.cloud.ai.graph.agent.flow.agent.SupervisorAgent;
 import com.alibaba.cloud.ai.graph.agent.hook.skills.SkillsAgentHook;
 import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
 import com.alibaba.cloud.ai.graph.skills.registry.classpath.ClasspathSkillRegistry;
@@ -12,7 +12,6 @@ import com.lowaltitude.agent.config.datasource.DynamicDataSourceManager;
 import com.lowaltitude.agent.service.query.DataQueryOrchestrator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -36,11 +35,6 @@ public class AgentConfig {
                 .build();
     }
     
-    @Bean
-    public EmbeddingModel embeddingModel(ChatModel chatModel) {
-        // 使用ChatModel作为EmbeddingModel（DashScope支持）
-        return (EmbeddingModel) chatModel;
-    }
 
     @Bean
     public DynamicDataSourceManager dynamicDataSourceManager() {
@@ -140,7 +134,7 @@ public class AgentConfig {
     }
 
     @Bean
-    public SupervisorAgent supervisorAgent(ChatModel chatModel,
+    public ReactAgent supervisorAgent(ChatModel chatModel,
                                            ReactAgent chatAgent,
                                            ReactAgent dataQueryAgent,
                                            ReactAgent articleAgent,
@@ -178,12 +172,15 @@ public class AgentConfig {
                 只返回Agent名称或FINISH。
                 """;
 
-        return SupervisorAgent.builder()
+        return ReactAgent.builder()
                 .name("low_altitude_supervisor")
                 .description("低空经济智能体中央协调器")
                 .model(chatModel)
                 .systemPrompt(systemPrompt)
-                .subAgents(List.of(chatAgent, dataQueryAgent, articleAgent, policyAgent))
+                .tools(AgentTool.create(chatAgent),AgentTool.create(dataQueryAgent),AgentTool.create(articleAgent),
+                		AgentTool.create(policyAgent))
+//                .subAgents(List.of(chatAgent, dataQueryAgent, articleAgent, policyAgent))
+//                .
                 .build();
     }
 }

@@ -151,7 +151,7 @@ public class IndicatorMatchingService {
         Prompt p = template.create(Map.of("query", query, "candidates", candidatesStr));
         
         try {
-            String response = chatModel.call(p).getResult().getOutput().getContent();
+            String response = chatModel.call(p).getResult().getOutput().getText();
             log.info("LLM rerank response: {}", response);
             
             // 解析JSON响应

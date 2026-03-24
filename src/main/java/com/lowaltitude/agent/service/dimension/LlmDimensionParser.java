@@ -257,7 +257,7 @@ public class LlmDimensionParser {
      */
     private String callLlm(String prompt) {
         Prompt p = new Prompt(prompt);
-        return chatModel.call(p).getResult().getOutput().getContent();
+        return chatModel.call(p).getResult().getOutput().getText();
     }
     
     /**

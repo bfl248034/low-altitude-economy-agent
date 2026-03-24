@@ -17,7 +17,6 @@ public class DynamicQueryTool {
     private final MetadataService metadataService;
     private final DynamicQueryService dynamicQueryService;
 
-    @Tool(name = "executeQueryOnDataSource", description = "在指定数据源上执行SQL查询")
     public String executeQueryOnDataSource(
             @ToolParam(description = "数据源ID，如'ds_h2_demo'") String sourceId,
             @ToolParam(description = "要执行的SQL语句") String sql) {

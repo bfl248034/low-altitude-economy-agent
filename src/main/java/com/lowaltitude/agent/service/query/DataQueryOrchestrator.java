@@ -8,6 +8,7 @@ import com.lowaltitude.agent.repository.DataDimensionConfigRepository;
 import com.lowaltitude.agent.repository.DataSourceConfigRepository;
 import com.lowaltitude.agent.repository.DataTableConfigRepository;
 import com.lowaltitude.agent.repository.IndicatorRepository;
+import com.lowaltitude.agent.service.DynamicQueryService;
 import com.lowaltitude.agent.service.dimension.LlmDimensionParser;
 import com.lowaltitude.agent.service.retrieval.IndicatorMatchingService;
 import lombok.RequiredArgsConstructor;
