@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>低空经济智能体</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .message-bubble { animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .typing-dot {
+            animation: typing 1.4s infinite;
+        }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-4px); }
+        }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-4xl bg-white/5 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/10 overflow-hidden flex flex-col" style="height: 85vh;">
+        
+        <!-- Header -->
+        <div class="bg-gradient-to-r from-blue-600/80 to-indigo-600/80 px-6 py-4 border-b border-white/10">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-white font-semibold text-lg">低空经济智能体</h1>
+                    <p class="text-blue-200 text-xs">基于 Spring AI Alibaba</p>
+                </div>
+                <div class="ml-auto flex items-center gap-2">
+                    <span class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                    <span class="text-green-300 text-xs">在线</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="px-6 py-3 bg-white/5 border-b border-white/10">
+            <div class="flex gap-2 overflow-x-auto scrollbar-hide">
+                <button onclick="setInput('你好，能做什么？')" class="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white/80 text-xs rounded-full transition whitespace-nowrap">
+                    👋 你好
+                </button>
+                <button onclick="setInput('北京招聘薪资是多少？')" class="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white/80 text-xs rounded-full transition whitespace-nowrap">
+                    💰 招聘薪资
+                </button>
+                <button onclick="setInput('各省份企业数量排名')" class="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white/80 text-xs rounded-full transition whitespace-nowrap">
+                    🏢 企业排名
+                </button>
+                <button onclick="setInput('深圳近3个月岗位趋势')" class="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white/80 text-xs rounded-full transition whitespace-nowrap">
+                    📈 趋势分析
+                </button>
+            </div>
+        </div>
+
+        <!-- Messages -->
+        <div id="messages" class="flex-1 overflow-y-auto p-6 space-y-4 scrollbar-hide">
+            <!-- Welcome Message -->
+            <div class="message-bubble flex gap-3">
+                <div class="w-8 h-8 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center flex-shrink-0">
+                    <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                </div>
+                <div class="bg-white/10 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[80%]">
+                    <p class="text-white/90 text-sm leading-relaxed">
+                        你好！我是低空经济智能体 🤖<br><br>
+                        我可以帮你查询：<br>
+                        • 💰 招聘薪资数据<br>
+                        • 🏢 企业数量统计<br>
+                        • 📊 行业趋势分析<br>
+                        • 📍 地区对比排名<br><br>
+                        试试问我：<span class="text-blue-300">"北京本科招聘薪资"</span> 或 <span class="text-blue-300">"各省份企业数量排名"</span>
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Typing Indicator (Hidden by default) -->
+        <div id="typing" class="hidden px-6 pb-2">
+            <div class="flex gap-3">
+                <div class="w-8 h-8 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center flex-shrink-0">
+                    <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                </div>
+                <div class="bg-white/10 rounded-2xl rounded-tl-sm px-4 py-3">
+                    <div class="flex gap-1">
+                        <span class="typing-dot w-2 h-2 bg-white/60 rounded-full"></span>
+                        <span class="typing-dot w-2 h-2 bg-white/60 rounded-full"></span>
+                        <span class="typing-dot w-2 h-2 bg-white/60 rounded-full"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Input -->
+        <div class="p-4 bg-white/5 border-t border-white/10">
+            <div class="flex gap-2">
+                <input 
+                    type="text" 
+                    id="input" 
+                    placeholder="输入你的问题..." 
+                    class="flex-1 bg-white/10 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/40 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition"
+                    onkeypress="if(event.key==='Enter') sendMessage()"
+                >
+                <button 
+                    onclick="sendMessage()" 
+                    id="sendBtn"
+                    class="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white px-5 py-3 rounded-xl transition flex items-center gap-2"
+                >
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+                    </svg>
+                    <span class="text-sm font-medium">发送</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const messagesEl = document.getElementById('messages');
+        const inputEl = document.getElementById('input');
+        const typingEl = document.getElementById('typing');
+        const sendBtn = document.getElementById('sendBtn');
+
+        function setInput(text) {
+            inputEl.value = text;
+            inputEl.focus();
+        }
+
+        function addUserMessage(text) {
+            const div = document.createElement('div');
+            div.className = 'message-bubble flex gap-3 justify-end';
+            div.innerHTML = `
+                <div class="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl rounded-tr-sm px-4 py-3 max-w-[80%]">
+                    <p class="text-white text-sm">${escapeHtml(text)}</p>
+                </div>
+                <div class="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                    <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                    </svg>
+                </div>
+            `;
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function addBotMessage(text) {
+            typingEl.classList.add('hidden');
+            const div = document.createElement('div');
+            div.className = 'message-bubble flex gap-3';
+            div.innerHTML = `
+                <div class="w-8 h-8 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center flex-shrink-0">
+                    <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                </div>
+                <div class="bg-white/10 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[80%]">
+                    <p class="text-white/90 text-sm leading-relaxed">${formatMessage(text)}</p>
+                </div>
+            `;
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function formatMessage(text) {
+            // Convert newlines to <br>
+            return escapeHtml(text).replace(/\n/g, '<br>');
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function showTyping() {
+            typingEl.classList.remove('hidden');
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const message = inputEl.value.trim();
+            if (!message) return;
+
+            addUserMessage(message);
+            inputEl.value = '';
+            showTyping();
+            sendBtn.disabled = true;
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    addBotMessage(data.message);
+                } else {
+                    addBotMessage('抱歉，处理出现了问题：' + (data.error || '未知错误'));
+                }
+            } catch (error) {
+                addBotMessage('网络错误，请稍后重试：' + error.message);
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        // Auto-focus input on load
+        inputEl.focus();
+    </script>
+</body>
+</html>

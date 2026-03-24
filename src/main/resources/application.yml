@@ -1,0 +1,42 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: low-altitude-economy-agent
+
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:}
+      chat:
+        options:
+          model: qwen-max
+          temperature: 0.7
+
+  datasource:
+    url: jdbc:h2:mem:lowaltitude;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  sql:
+    init:
+      schema-locations: classpath:db/schema-h2.sql
+      data-locations: classpath:db/data.sql
+      mode: always
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  mapper-locations: classpath*:mapper/**/*.xml
+  type-aliases-package: com.lowaltitude.agent.entity
+
+logging:
+  level:
+    com.alibaba.cloud.ai: DEBUG
+    com.lowaltitude.agent: DEBUG
