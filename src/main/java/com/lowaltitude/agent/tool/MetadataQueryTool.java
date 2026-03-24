@@ -107,7 +107,7 @@ public class MetadataQueryTool {
             map.put("valueCode", v.getValueCode());
             map.put("valueName", v.getValueName());
             map.put("synonyms", v.getSynonyms());
-            map.put("isDefault", v.getIsDefault());
+//            map.put("isDefault", v.getIsDefault());
             return map;
         }).collect(Collectors.toList());
     }

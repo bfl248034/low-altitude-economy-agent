@@ -108,7 +108,7 @@ public class VectorSearchTool {
         
         try {
             String response = chatModel.call(new Prompt(prompt))
-                    .getResult().getOutput().getContent();
+                    .getResult().getOutput().getText();
             
             log.info("LLM rerank response: {}", response);
             
@@ -205,7 +205,7 @@ public class VectorSearchTool {
         
         try {
             String response = chatModel.call(new Prompt(prompt))
-                    .getResult().getOutput().getContent();
+                    .getResult().getOutput().getText();
             
             log.info("LLM parse dimensions response: {}", response);
             
