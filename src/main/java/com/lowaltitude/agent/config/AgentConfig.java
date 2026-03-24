@@ -17,6 +17,8 @@ import org.springframework.context.annotation.Configuration;
 
 import java.util.List;
 
+import lombok.extern.slf4j.Slf4j;
+
 @Slf4j
 @Configuration
 public class AgentConfig {
@@ -56,6 +58,9 @@ public class AgentConfig {
 
     // ==================== Agent定义 ====================
 
+    /**
+     * 闲聊Agent - 处理问候、简单问答
+     */
     @Bean
     public ReactAgent chatAgent(ChatModel chatModel) {
         return ReactAgent.builder()
@@ -74,6 +79,10 @@ public class AgentConfig {
                 .build();
     }
 
+    /**
+     * 数据查询Agent - 使用3-Skill设计
+     * Skill: intent-router → data-query-orchestrator → result-presenter
+     */
     @Bean
     public ReactAgent dataQueryAgent(
             ChatModel chatModel,
@@ -88,44 +97,36 @@ public class AgentConfig {
                 .model(chatModel)
                 .description("专业处理低空经济数据查询")
                 .instruction("""
-                        你是低空经济数据查询专家。严格按以下流程执行：
+                        你是低空经济数据查询专家。使用3-Skill流程完成查询：
                         
                         ## 执行流程
                         
-                        Step 1: 意图分析
-                        - 调用 read_skill("intent-analyzer")
-                        - 如果是CHAT，直接回复
+                        Step 1: 意图路由
+                        - 调用 read_skill("intent-router")
+                        - 判断用户意图：CHAT / DATA_QUERY / UNKNOWN
+                        - 如果是CHAT，直接友好回复
                         - 如果是DATA_QUERY，继续下一步
                         
-                        Step 2: 指标匹配
-                        - 调用 read_skill("indicator-matcher")
-                        - 使用Tool：extractKeywords → expandSynonyms → vectorSearch → llmRerank
-                        - 获取匹配的指标列表
+                        Step 2: 数据查询编排（核心）
+                        - 调用 read_skill("data-query-orchestrator")
+                        - 内部自动完成：指标匹配 → 维度解析 → SQL生成 → 执行 → 结果处理
+                        - 使用的Tool：
+                          * extractKeywords, expandSynonyms, vectorSearch, llmRerank（指标匹配）
+                          * getIndicatorMeta, getLatestTime, getDimensionValues, llmParseDimensions（维度解析）
+                          * getTableSchema, buildSql（SQL生成）
+                          * executeOnDataSource, translateCodes, formatNumbers（查询执行）
+                          * generateSummary（结果处理）
+                        - 返回：{success, indicators, dimensions, data, summary}
                         
-                        Step 3: 维度解析
-                        - 调用 read_skill("dimension-parser")
-                        - 使用Tool：getIndicatorMeta → getLatestTime → getDimensionValues → llmParseDimensions
-                        - 获取解析后的维度（时间、地区、其他维度）
-                        
-                        Step 4: SQL生成
-                        - 调用 read_skill("sql-generator")
-                        - 使用Tool：getTableSchema → getDataSource → buildSql
-                        - 获取生成的SQL
-                        
-                        Step 5: 查询执行
-                        - 调用 read_skill("query-executor")
-                        - 使用Tool：executeOnDataSource → translateCodes → formatNumbers
-                        - 获取查询结果
-                        
-                        Step 6: 结果渲染
-                        - 调用 read_skill("result-renderer")
-                        - 使用Tool：generateSummary → suggestRelatedQueries
-                        - 生成最终回复
+                        Step 3: 结果展示
+                        - 调用 read_skill("result-presenter")
+                        - 生成美观的回复文本
+                        - 推荐相关问题
                         
                         ## 注意事项
-                        - 必须按顺序执行每个步骤
-                        - 每个步骤使用对应的Tool获取数据
-                        - 支持多指标、多维度值、截面分析
+                        - 严格按1→2→3顺序执行
+                        - data-query-orchestrator内部已处理多指标、多维度、截面分析
+                        - 如Step 1判定为CHAT，直接回复，不执行后续步骤
                         """)
                 .tools(textProcessingTool, metadataQueryTool, vectorSearchTool, sqlExecutionTool)
                 .hooks(List.of(skillsAgentHook))
@@ -133,6 +134,9 @@ public class AgentConfig {
                 .build();
     }
 
+    /**
+     * 文章检索Agent - 预留
+     */
     @Bean
     public ReactAgent articleAgent(ChatModel chatModel) {
         return ReactAgent.builder()
@@ -144,6 +148,9 @@ public class AgentConfig {
                 .build();
     }
 
+    /**
+     * 政策分析Agent - 预留
+     */
     @Bean
     public ReactAgent policyAgent(ChatModel chatModel) {
         return ReactAgent.builder()
@@ -155,6 +162,9 @@ public class AgentConfig {
                 .build();
     }
 
+    /**
+     * SupervisorAgent - 中央协调器
+     */
     @Bean
     public ReactAgent supervisorAgent(ChatModel chatModel,
                                            ReactAgent chatAgent,
@@ -168,33 +178,35 @@ public class AgentConfig {
                 
                 ### chat_agent
                 - **功能**: 处理闲聊、问候、简单问答
-                - **适用场景**: "你好"、"能做什么"等
+                - **适用场景**: "你好"、"能做什么"、"谢谢"等
+                - **处理方式**: 直接回复，FINISH
                 
                 ### data_query_agent
                 - **功能**: 处理低空经济数据查询
-                - **适用场景**: 涉及"招聘"、"薪资"、"企业数量"等具体指标
-                - **执行流程**: 
-                  1. intent-analyzer（意图分析）
-                  2. indicator-matcher（指标匹配：向量+BM25+LLM精排）
-                  3. dimension-parser（维度解析：LLM直接抽取）
-                  4. sql-generator（SQL生成）
-                  5. query-executor（查询执行）
-                  6. result-renderer（结果渲染）
+                - **适用场景**: 涉及"招聘"、"薪资"、"企业数量"、"岗位"、"专利"、"排名"、"趋势"等
+                - **内部流程**（3-Skill）:
+                  1. intent-router（意图路由）
+                  2. data-query-orchestrator（查询编排：指标→维度→SQL→执行→结果）
+                  3. result-presenter（结果展示）
+                - **处理方式**: 单步调用，FINISH
                 
                 ### article_agent
                 - **功能**: 文章检索（开发中）
+                - **处理方式**: 返回提示信息
                 
                 ### policy_agent
                 - **功能**: 政策分析（开发中）
+                - **处理方式**: 返回提示信息
                 
                 ## 决策规则
-                1. 闲聊/问候 -> chat_agent -> FINISH
-                2. 数据查询（指标关键词）-> data_query_agent -> FINISH
-                3. 文章/政策需求 -> 如开发中则返回提示
-                4. 模糊意图 -> chat_agent 进行澄清
+                1. **闲聊/问候** → chat_agent → FINISH
+                2. **数据查询**（含指标关键词）→ data_query_agent → FINISH
+                3. **文章需求** → 返回"文章检索功能开发中"
+                4. **政策需求** → 返回"政策分析功能开发中"
+                5. **模糊/无法判断** → chat_agent 进行澄清 → FINISH
                 
                 ## 响应格式
-                只返回Agent名称或FINISH。
+                直接调用对应Agent的工具，或返回FINISH。
                 """;
 
         return ReactAgent.builder()
