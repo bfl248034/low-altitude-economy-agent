@@ -201,8 +201,8 @@ public class DataQueryTool {
     @Tool(name = "buildSql", description = "根据指标、维度、时间等条件构建SQL查询语句")
     public Map<String, Object> buildSql(@ToolParam(description = "表ID") String tableId,
                                          @ToolParam(description = "指标ID列表（支持多指标）") List<String> indicatorIds,
-                                         @ToolParam(description = "时间范围开始（格式：yyyyMM）") String timeStart,
-                                         @ToolParam(description = "时间范围结束（格式：yyyyMM）") String timeEnd,
+                                         @ToolParam(description = "时间范围开始（格式：yyyy_MM_dd）") String timeStart,
+                                         @ToolParam(description = "时间范围结束（格式：yyyy_MM_dd）") String timeEnd,
                                          @ToolParam(description = "地区编码（可选）") String regionCode,
                                          @ToolParam(description = "地区级别（1=全国,2=省级,3=市级,4=区县，可选）") Integer regionLevel,
                                          @ToolParam(description = "其他维度条件JSON，如{\"edu_level\":[\"3\",\"4\"]}") String dimensionConditions) {
