@@ -26,8 +26,11 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * 数据查询工具 - 一站式数据查询能力
- * 包含：文本处理、向量检索、元数据查询、SQL构建、SQL执行
+ * 数据查询工具 - 4个粗粒度工具
+ * 1. matchIndicators: 指标匹配（关键词提取→同义词扩展→向量检索→LLM精排）
+ * 2. parseDimensions: 维度解析（获取元数据→获取维度配置→LLM解析维度条件）
+ * 3. buildQuerySql: SQL生成（获取表结构→构建SQL）
+ * 4. executeQuery: 查询执行（执行SQL→返回结果）
  */
 @Slf4j
 @Component
@@ -40,13 +43,182 @@ public class DataQueryTool {
     private final DynamicQueryService dynamicQueryService;
     private final ChatModel chatModel;
 
-    // ==================== 文本处理 ====================
+    // ==================== Tool 1: 指标匹配 ====================
 
-    @Tool(name = "extractKeywords", description = "从用户查询中提取潜在指标关键词，过滤地区和时间词")
-    public List<String> extractKeywords(@ToolParam(description = "用户原始查询") String query) {
-        log.info("Extracting keywords from: {}", query);
-        Set<String> keywords = new LinkedHashSet<>();
+    @Tool(name = "matchIndicators", description = "指标匹配：从用户查询中识别并匹配相关指标，支持多指标。流程：关键词提取→同义词扩展→向量检索→LLM精排")
+    public Map<String, Object> matchIndicators(
+            @ToolParam(description = "用户原始查询，如'北京近6个月本科招聘薪资'") String query,
+            @ToolParam(description = "返回候选数量，默认10") int topK) {
         
+        log.info("Matching indicators for query: {}", query);
+        
+        try {
+            // Step 1: 提取关键词
+            List<String> keywords = extractKeywordsInternal(query);
+            log.debug("Extracted keywords: {}", keywords);
+            
+            // Step 2: 扩展同义词
+            List<String> expandedKeywords = expandSynonymsInternal(keywords);
+            log.debug("Expanded keywords: {}", expandedKeywords);
+            
+            // Step 3: 向量检索候选指标
+            List<Map<String, Object>> candidates = vectorSearchInternal(expandedKeywords, topK);
+            log.debug("Found {} candidates via vector search", candidates.size());
+            
+            if (candidates.isEmpty()) {
+                return Map.of(
+                    "success", false,
+                    "error", "未找到匹配的指标",
+                    "suggestion", "请尝试使用更通用的词汇，如'招聘'、'企业'、'专利'等"
+                );
+            }
+            
+            // Step 4: LLM精排
+            Map<String, Object> rerankResult = llmRerankInternal(query, candidates);
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> matchedIndicators = (List<Map<String, Object>>) rerankResult.get("indicators");
+            
+            return Map.of(
+                "success", true,
+                "indicators", matchedIndicators,
+                "isMultiMetric", rerankResult.get("isMultiMetric"),
+                "reasoning", rerankResult.get("reasoning"),
+                "keywords", expandedKeywords
+            );
+            
+        } catch (Exception e) {
+            log.error("Indicator matching failed", e);
+            return Map.of("success", false, "error", e.getMessage());
+        }
+    }
+
+    // ==================== Tool 2: 维度解析 ====================
+
+    @Tool(name = "parseDimensions", description = "维度解析：解析查询中的维度条件（时间、地区、其他维度）。流程：获取指标元数据→获取维度配置→LLM解析")
+    public Map<String, Object> parseDimensions(
+            @ToolParam(description = "用户原始查询") String query,
+            @ToolParam(description = "匹配到的指标ID列表") List<String> indicatorIds) {
+        
+        log.info("Parsing dimensions for query: {}, indicators: {}", query, indicatorIds);
+        
+        try {
+            // 获取第一个指标的元数据（多指标时以第一个为准）
+            String primaryIndicatorId = indicatorIds.get(0);
+            Map<String, Object> indicatorMeta = getIndicatorMetaInternal(primaryIndicatorId);
+            
+            if (indicatorMeta.containsKey("error")) {
+                return Map.of("success", false, "error", indicatorMeta.get("error"));
+            }
+            
+            // 获取最新时间配置
+            Map<String, Object> latestTime = getLatestTimeInternal(primaryIndicatorId);
+            
+            // 获取维度配置
+            String tableId = (String) indicatorMeta.get("tableId");
+            List<Map<String, Object>> dimensionConfigs = getDimensionConfigsInternal(tableId, true);
+            
+            // LLM解析维度
+            Map<String, Object> parseResult = llmParseDimensionsInternal(query, 
+                toJson(indicatorMeta), toJson(dimensionConfigs));
+            
+            return Map.of(
+                "success", true,
+                "indicatorMeta", indicatorMeta,
+                "latestTime", latestTime,
+                "dimensionConfigs", dimensionConfigs,
+                "parsedDimensions", parseResult,
+                "tableId", tableId
+            );
+            
+        } catch (Exception e) {
+            log.error("Dimension parsing failed", e);
+            return Map.of("success", false, "error", e.getMessage());
+        }
+    }
+
+    // ==================== Tool 3: SQL生成 ====================
+
+    @Tool(name = "buildQuerySql", description = "SQL生成：根据指标和维度条件生成查询SQL。流程：获取表结构→构建SQL语句")
+    public Map<String, Object> buildQuerySql(
+            @ToolParam(description = "表ID") String tableId,
+            @ToolParam(description = "指标ID列表（支持多指标）") List<String> indicatorIds,
+            @ToolParam(description = "时间范围开始（格式：yyyyMM）") String timeStart,
+            @ToolParam(description = "时间范围结束（格式：yyyyMM）") String timeEnd,
+            @ToolParam(description = "地区编码（可选）") String regionCode,
+            @ToolParam(description = "地区级别（1=全国,2=省级,3=市级,4=区县，可选）") Integer regionLevel,
+            @ToolParam(description = "其他维度条件JSON，如{\"edu_level\":[\"3\",\"4\"]}") String dimensionConditions) {
+        
+        log.info("Building SQL for table: {}, indicators: {}", tableId, indicatorIds);
+        
+        try {
+            // 获取表结构
+            Map<String, Object> tableSchema = getTableSchemaInternal(tableId);
+            if (tableSchema.containsKey("error")) {
+                return Map.of("success", false, "error", tableSchema.get("error"));
+            }
+            
+            // 构建SQL
+            DataTableConfig table = metadataService.getDataTable(tableId).orElseThrow();
+            String sql = generateSql(table, indicatorIds, timeStart, timeEnd, regionCode, regionLevel, dimensionConditions);
+            
+            return Map.of(
+                "success", true,
+                "sql", sql,
+                "tableId", tableId,
+                "sourceId", table.getSourceId(),
+                "tableSchema", tableSchema
+            );
+            
+        } catch (Exception e) {
+            log.error("SQL generation failed", e);
+            return Map.of("success", false, "error", e.getMessage());
+        }
+    }
+
+    // ==================== Tool 4: 查询执行 ====================
+
+    @Tool(name = "executeQuery", description = "查询执行：在指定数据源执行SQL并返回结果，包含编码翻译")
+    public Map<String, Object> executeQuery(
+            @ToolParam(description = "数据源ID") String sourceId,
+            @ToolParam(description = "SQL语句") String sql) {
+        
+        log.info("Executing query on source: {}", sourceId);
+        
+        try {
+            // 获取数据源配置
+            Map<String, Object> dataSource = getDataSourceInternal(sourceId);
+            if (dataSource.containsKey("error")) {
+                return Map.of("success", false, "error", dataSource.get("error"));
+            }
+            
+            // 执行SQL
+            DataSourceConfig config = metadataService.getDataSource(sourceId)
+                    .orElseThrow(() -> new RuntimeException("数据源不存在: " + sourceId));
+            
+            List<Map<String, Object>> results = dynamicQueryService.executeQuery(config, sql);
+            
+            // 翻译结果中的编码
+            List<Map<String, Object>> translatedResults = results.stream()
+                .map(this::translateResultCodes)
+                .collect(Collectors.toList());
+            
+            return Map.of(
+                "success", true,
+                "data", translatedResults,
+                "rowCount", results.size(),
+                "dataSource", dataSource.get("sourceName")
+            );
+            
+        } catch (Exception e) {
+            log.error("Query execution failed", e);
+            return Map.of("success", false, "error", e.getMessage());
+        }
+    }
+
+    // ==================== 内部方法 ====================
+
+    private List<String> extractKeywordsInternal(String query) {
+        Set<String> keywords = new LinkedHashSet<>();
         String[] parts = query.split("[和与、，,的\\s]+");
         for (String part : parts) {
             String trimmed = part.trim();
@@ -54,16 +226,13 @@ public class DataQueryTool {
                 keywords.add(trimmed);
             }
         }
-        
         if (keywords.isEmpty()) {
             keywords.add(query);
         }
-        
         return new ArrayList<>(keywords);
     }
 
-    @Tool(name = "expandSynonyms", description = "扩展关键词的同义词列表，增加召回率")
-    public List<String> expandSynonyms(@ToolParam(description = "关键词列表") List<String> keywords) {
+    private List<String> expandSynonymsInternal(List<String> keywords) {
         Set<String> expanded = new LinkedHashSet<>();
         for (String keyword : keywords) {
             expanded.add(keyword);
@@ -72,44 +241,18 @@ public class DataQueryTool {
         return new ArrayList<>(expanded);
     }
 
-    @Tool(name = "bm25Score", description = "计算查询与指标的BM25文本匹配分数")
-    public double bm25Score(@ToolParam(description = "用户查询") String query,
-                             @ToolParam(description = "指标名称") String indicatorName,
-                             @ToolParam(description = "指标标签") String tags,
-                             @ToolParam(description = "指标描述") String remark) {
-        String queryLower = query.toLowerCase();
-        String[] queryTerms = queryLower.split("\\s+");
-        String text = (indicatorName + " " + (tags != null ? tags : "") + " " + 
-                      (remark != null ? remark : "")).toLowerCase();
-        
-        double score = 0.0;
-        for (String term : queryTerms) {
-            if (indicatorName.toLowerCase().contains(term)) score += 2.0;
-            if (tags != null && tags.toLowerCase().contains(term)) score += 1.5;
-            if (remark != null && remark.toLowerCase().contains(term)) score += 1.0;
-        }
-        return score / (1 + 0.01 * text.length());
-    }
-
-    // ==================== 向量检索 ====================
-
-    @Tool(name = "vectorSearch", description = "使用向量+BM25混合检索候选指标")
-    public List<Map<String, Object>> vectorSearch(@ToolParam(description = "扩展后的关键词列表") List<String> keywords,
-                                                   @ToolParam(description = "返回候选数量") int topK) {
+    private List<Map<String, Object>> vectorSearchInternal(List<String> keywords, int topK) {
         Set<IndicatorVector> candidates = new HashSet<>();
         for (String keyword : keywords) {
             candidates.addAll(vectorSearchService.hybridSearch(keyword, topK));
         }
-        
         return candidates.stream()
                 .map(this::convertVectorToMap)
                 .limit(topK)
                 .collect(Collectors.toList());
     }
 
-    @Tool(name = "llmRerank", description = "使用LLM对候选指标精排，确定最终匹配（支持多指标）")
-    public Map<String, Object> llmRerank(@ToolParam(description = "用户原始查询") String query,
-                                          @ToolParam(description = "候选指标列表") List<Map<String, Object>> candidates) {
+    private Map<String, Object> llmRerankInternal(String query, List<Map<String, Object>> candidates) {
         if (candidates.isEmpty()) {
             return Map.of("indicators", List.of(), "isMultiMetric", false, "reasoning", "无候选指标");
         }
@@ -126,10 +269,7 @@ public class DataQueryTool {
         }
     }
 
-    @Tool(name = "llmParseDimensions", description = "使用LLM从用户查询中解析维度条件（时间、地区、其他维度）")
-    public Map<String, Object> llmParseDimensions(@ToolParam(description = "用户原始查询") String query,
-                                                   @ToolParam(description = "指标信息JSON") String indicatorJson,
-                                                   @ToolParam(description = "维度值列表JSON") String dimensionsJson) {
+    private Map<String, Object> llmParseDimensionsInternal(String query, String indicatorJson, String dimensionsJson) {
         String prompt = buildParsePrompt(query, indicatorJson, dimensionsJson);
         
         try {
@@ -142,17 +282,13 @@ public class DataQueryTool {
         }
     }
 
-    // ==================== 元数据查询 ====================
-
-    @Tool(name = "getIndicatorMeta", description = "根据指标ID获取完整元数据")
-    public Map<String, Object> getIndicatorMeta(@ToolParam(description = "指标ID") String indicatorId) {
+    private Map<String, Object> getIndicatorMetaInternal(String indicatorId) {
         return metadataService.getIndicatorById(indicatorId)
                 .map(this::convertIndicatorToMap)
                 .orElse(Map.of("error", "指标不存在: " + indicatorId));
     }
 
-    @Tool(name = "getLatestTime", description = "获取指标的最新数据时间配置")
-    public Map<String, Object> getLatestTime(@ToolParam(description = "指标ID") String indicatorId) {
+    private Map<String, Object> getLatestTimeInternal(String indicatorId) {
         return metadataService.getLatestTime(indicatorId)
                 .map(this::convertTimeToMap)
                 .orElseGet(() -> Map.of(
@@ -163,68 +299,39 @@ public class DataQueryTool {
                 ));
     }
 
-    /**
-     * 获取维度配置（包含默认值）
-     * 默认值来自 db_data_dimension.default_value 字段
-     */
-    @Tool(name = "getDimensionConfigs", description = "获取表的维度配置，包含默认值（来自db_data_dimension.default_value）")
-    public List<Map<String, Object>> getDimensionConfigs(@ToolParam(description = "表ID") String tableId,
-                                                          @ToolParam(description = "是否排除时间和地区") boolean excludeTimeRegion) {
+    private List<Map<String, Object>> getDimensionConfigsInternal(String tableId, boolean excludeTimeRegion) {
         return metadataService.getTableDimensionConfigs(tableId, excludeTimeRegion)
                 .stream()
                 .map(this::convertDimensionConfigToMap)
                 .collect(Collectors.toList());
     }
 
-    @Tool(name = "getTableSchema", description = "获取数据表的完整结构信息")
-    public Map<String, Object> getTableSchema(@ToolParam(description = "表ID") String tableId) {
+    private Map<String, Object> getTableSchemaInternal(String tableId) {
         return metadataService.getDataTable(tableId)
                 .map(this::convertTableToMap)
                 .orElse(Map.of("error", "表不存在: " + tableId));
     }
 
-    @Tool(name = "getDataSource", description = "获取数据源配置信息")
-    public Map<String, Object> getDataSource(@ToolParam(description = "数据源ID") String sourceId) {
+    private Map<String, Object> getDataSourceInternal(String sourceId) {
         return metadataService.getDataSource(sourceId)
                 .map(this::convertSourceToMap)
                 .orElse(Map.of("error", "数据源不存在: " + sourceId));
     }
 
-    @Tool(name = "translateCodes", description = "将维度编码翻译为中文名称")
-    public String translateCodes(@ToolParam(description = "维度ID，如region、edu_level") String dimensionId,
-                                  @ToolParam(description = "编码值，如110000、3") String valueCode) {
+    private String translateCodesInternal(String dimensionId, String valueCode) {
         return metadataService.getDimensionValueName(dimensionId, valueCode);
     }
 
-    // ==================== SQL构建 ====================
-
-    @Tool(name = "buildSql", description = "根据指标、维度、时间等条件构建SQL查询语句")
-    public Map<String, Object> buildSql(@ToolParam(description = "表ID") String tableId,
-                                         @ToolParam(description = "指标ID列表（支持多指标）") List<String> indicatorIds,
-                                         @ToolParam(description = "时间范围开始（格式：yyyy_MM_dd）") String timeStart,
-                                         @ToolParam(description = "时间范围结束（格式：yyyy_MM_dd）") String timeEnd,
-                                         @ToolParam(description = "地区编码（可选）") String regionCode,
-                                         @ToolParam(description = "地区级别（1=全国,2=省级,3=市级,4=区县，可选）") Integer regionLevel,
-                                         @ToolParam(description = "其他维度条件JSON，如{\"edu_level\":[\"3\",\"4\"]}") String dimensionConditions) {
-        try {
-            Optional<DataTableConfig> tableOpt = metadataService.getDataTable(tableId);
-            if (tableOpt.isEmpty()) {
-                return Map.of("success", false, "error", "表不存在: " + tableId);
-            }
-            
-            DataTableConfig table = tableOpt.get();
-            String sql = generateSql(table, indicatorIds, timeStart, timeEnd, regionCode, regionLevel, dimensionConditions);
-            
-            return Map.of(
-                    "success", true,
-                    "sql", sql,
-                    "tableId", tableId,
-                    "sourceId", table.getSourceId()
-            );
-        } catch (Exception e) {
-            log.error("Build SQL failed", e);
-            return Map.of("success", false, "error", e.getMessage());
+    private Map<String, Object> translateResultCodes(Map<String, Object> row) {
+        Map<String, Object> translated = new HashMap<>(row);
+        
+        // 翻译地区编码
+        if (row.containsKey("region_id")) {
+            String regionName = translateCodesInternal("region", (String) row.get("region_id"));
+            translated.put("region_name", regionName);
         }
+        
+        return translated;
     }
 
     private String generateSql(DataTableConfig table, List<String> indicatorIds,
@@ -279,23 +386,6 @@ public class DataQueryTool {
         return sql.toString();
     }
 
-    // ==================== SQL执行 ====================
-
-    @Tool(name = "executeSql", description = "在指定数据源执行SQL查询并返回结果")
-    public Map<String, Object> executeSql(@ToolParam(description = "数据源ID") String sourceId,
-                                           @ToolParam(description = "SQL语句") String sql) {
-        try {
-            DataSourceConfig config = metadataService.getDataSource(sourceId)
-                    .orElseThrow(() -> new RuntimeException("数据源不存在: " + sourceId));
-            
-            List<Map<String, Object>> results = dynamicQueryService.executeQuery(config, sql);
-            return Map.of("success", true, "data", results, "rowCount", results.size());
-        } catch (Exception e) {
-            log.error("Query execution failed", e);
-            return Map.of("success", false, "error", e.getMessage());
-        }
-    }
-
     // ==================== 辅助方法 ====================
 
     private boolean isRegionWord(String word) {
@@ -305,6 +395,11 @@ public class DataQueryTool {
 
     private boolean isTimeWord(String word) {
         return Pattern.matches(".*(近|最近|最近\\d+|\\d+个月|\\d+年|年|月|日|趋势).*", word);
+    }
+
+    private String toJson(Object obj) {
+        // 简化实现，实际可用 Jackson
+        return obj.toString();
     }
 
     private Map<String, Object> convertVectorToMap(IndicatorVector v) {

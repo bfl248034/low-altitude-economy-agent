@@ -42,31 +42,48 @@ description: |
 }
 ```
 
-## 内部执行流程
+## 执行流程（4个粗粒度工具）
 
 ### Step 1: 指标匹配
-**使用Tool**：`extractKeywords` → `expandSynonyms` → `vectorSearch` → `llmRerank`
+**使用Tool**：`matchIndicators`
 
-**流程**：
-1. 提取用户查询中的潜在指标词
+**输入**：
+- `query`: 用户原始查询
+- `topK`: 返回候选数量（默认10）
+
+**内部流程**：
+1. 提取关键词（过滤地区和时间词）
 2. 扩展同义词（薪资→[薪资,工资,薪酬,收入]）
-3. 向量检索候选指标
+3. 向量+BM25混合检索候选指标
 4. LLM精排确认最终匹配（支持多指标）
 
-**输出**：匹配到的指标列表 + 是否多指标
+**输出**：
+```json
+{
+  "success": true,
+  "indicators": [{"indicatorId": "...", "indicatorName": "...", "matchScore": 0.95}],
+  "isMultiMetric": false,
+  "reasoning": "匹配理由",
+  "keywords": ["关键词列表"]
+}
+```
 
 ### Step 2: 维度解析
-**使用Tool**：`getIndicatorMeta` → `getLatestTime` → `getDimensionConfigs` → `llmParseDimensions`
+**使用Tool**：`parseDimensions`
 
-**流程**：
+**输入**：
+- `query`: 用户原始查询
+- `indicatorIds`: 匹配到的指标ID列表
+
+**内部流程**：
 1. 获取指标元数据（频率、表ID）
-2. 获取最新数据时间
+2. 获取最新数据时间配置
 3. 获取维度配置（**包含默认值，来自 db_data_dimension.default_value**）
-4. LLM解析：
+4. LLM解析维度条件：
    - 地区：自然语言 → code + level
    - 时间：基于频率计算范围
    - 其他维度：从提供的列表中匹配
-   - 分析类型：TREND/RANKING/COMPARISON/CROSS_SECTION
+   - 分析类型：SINGLE/TREND/RANKING/COMPARISON/CROSS_SECTION
 
 **默认值说明**：
 - 默认值存储在 `db_data_dimension` 表的 `default_value` 字段
@@ -76,10 +93,31 @@ description: |
 **特殊处理**：
 - "各省" → level=2，不指定具体region_id
 - "本科和硕士" → values=["3","4"]
-- "不同学历" → isCrossSection=true，排除默认值
+- "不同学历" → analysisType=CROSS_SECTION，排除默认值
+
+**输出**：
+```json
+{
+  "success": true,
+  "indicatorMeta": {...},
+  "latestTime": {...},
+  "dimensionConfigs": [...],
+  "parsedDimensions": {"rawResponse": "LLM解析结果"},
+  "tableId": "表ID"
+}
+```
 
 ### Step 3: SQL生成
-**使用Tool**：`getTableSchema` → `buildSql`
+**使用Tool**：`buildQuerySql`
+
+**输入**：
+- `tableId`: 表ID
+- `indicatorIds`: 指标ID列表（支持多指标）
+- `timeStart`: 时间开始（格式：yyyyMM）
+- `timeEnd`: 时间结束（格式：yyyyMM）
+- `regionCode`: 地区编码（可选）
+- `regionLevel`: 地区级别（可选，1=全国,2=省级,3=市级,4=区县）
+- `dimensionConditions`: 其他维度条件JSON（可选，如`{"edu_level":["3","4"]}`）
 
 **生成规则**：
 ```sql
@@ -94,33 +132,49 @@ WHERE
 ORDER BY time_id DESC
 ```
 
-**buildSql Tool 参数**：
-- `tableId`: 表ID
-- `indicatorIds`: 指标ID列表（支持多指标）
-- `timeStart`: 时间开始（格式：yyyyMM）
-- `timeEnd`: 时间结束（格式：yyyyMM）
-- `regionCode`: 地区编码（可选）
-- `regionLevel`: 地区级别（可选，1=全国,2=省级,3=市级,4=区县）
-- `dimensionConditions`: 其他维度条件JSON（可选）
-
 **注意**：
 - 数据表已聚合，**不需要GROUP BY**
 - 时间格式转换：yyyy-MM-dd → yyyyMM（月表）
 - 截面分析：`dimension != default_value`（排除默认值）
 
-### Step 4: 查询执行
-**使用Tool**：`executeSql`
+**输出**：
+```json
+{
+  "success": true,
+  "sql": "SELECT ...",
+  "tableId": "表ID",
+  "sourceId": "数据源ID",
+  "tableSchema": {...}
+}
+```
 
-**流程**：
-1. 在对应数据源执行SQL
-2. 返回查询结果
+### Step 4: 查询执行
+**使用Tool**：`executeQuery`
+
+**输入**：
+- `sourceId`: 数据源ID
+- `sql`: SQL语句
+
+**内部流程**：
+1. 获取数据源配置
+2. 执行SQL查询
+3. 自动翻译结果中的编码（如region_id→地区名）
+
+**输出**：
+```json
+{
+  "success": true,
+  "data": [...],
+  "rowCount": 6,
+  "dataSource": "数据源名称"
+}
+```
 
 ### Step 5: 结果处理
-**使用Tool**：`translateCodes` → `ResultFormatTool`
-
-- 翻译编码：region_id→地区名，edu_level→学历名
+使用 `ResultFormatTool` 完成：
 - 格式化数值：12500→"12,500元"
-- 生成数据摘要和推荐问题
+- 生成数据摘要
+- 推荐相关问题
 
 ## 错误处理
 
@@ -136,15 +190,22 @@ ORDER BY time_id DESC
 **输入**："北京近6个月本科招聘薪资"
 
 **处理过程**：
-1. 指标匹配：提取[招聘,薪资]→扩展→向量检索→LLM确认→`招聘岗位平均薪酬`
-2. 维度解析：
+1. **指标匹配**：调用 `matchIndicators`
+   - 提取[招聘,薪资]→扩展→向量检索→LLM确认→`招聘岗位平均薪酬`
+   
+2. **维度解析**：调用 `parseDimensions`
    - 地区：北京→code:110000, level:2
    - 时间：频率M+近6个月→202401到202406
    - 学历：本科→code:3（从db_data_dimension获取默认值"0"表示"不限"）
    - 分析类型：TREND
-3. SQL生成：使用buildSql构建带上述条件的查询
-4. 执行查询：返回6个月的数据
-5. 结果处理：生成趋势摘要
+   
+3. **SQL生成**：调用 `buildQuerySql`
+   - 使用解析出的条件构建SQL
+   
+4. **查询执行**：调用 `executeQuery`
+   - 执行SQL，返回6个月的数据
+   
+5. **结果处理**：生成趋势摘要
 
 **输出**：
 ```
@@ -156,3 +217,12 @@ ORDER BY time_id DESC
 
 整体呈上涨趋势，平均薪资约12,650元。
 ```
+
+## Tool列表
+
+| Tool名 | 功能 | 内部流程 |
+|--------|------|----------|
+| `matchIndicators` | 指标匹配 | 关键词提取→同义词扩展→向量检索→LLM精排 |
+| `parseDimensions` | 维度解析 | 获取元数据→获取维度配置→LLM解析 |
+| `buildQuerySql` | SQL生成 | 获取表结构→构建SQL语句 |
+| `executeQuery` | 查询执行 | 执行SQL→翻译编码→返回结果 |

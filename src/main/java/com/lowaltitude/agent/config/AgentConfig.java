@@ -138,31 +138,21 @@ public class AgentConfig {
                         - 了解数据查询的完整流程
                         
                         Step 2: 指标匹配
-                        - 使用 extractKeywords 提取关键词
-                        - 使用 expandSynonyms 扩展同义词
-                        - 使用 vectorSearch 向量检索候选指标
-                        - 使用 llmRerank LLM精排确认指标（支持多指标）
+                        - 使用 matchIndicators 工具完成完整匹配流程
+                        - 输入用户查询，返回匹配的指标列表（支持多指标）
                         
-                        Step 3: 获取元数据
-                        - 使用 getIndicatorMeta 获取指标详情
-                        - 使用 getLatestTime 获取最新时间
-                        - 使用 getTableSchema 获取表结构
-                        - 使用 getDimensionConfigs 获取维度配置（含默认值）
+                        Step 3: 维度解析
+                        - 使用 parseDimensions 工具解析维度条件
+                        - 自动获取指标元数据、最新时间、维度配置
+                        - 使用LLM解析地区、时间、其他维度值
                         
-                        Step 4: 维度解析
-                        - 使用 llmParseDimensions LLM解析维度
-                        - 解析地区、时间、其他维度值
-                        - 识别分析类型（趋势/排名/对比）
+                        Step 4: SQL生成
+                        - 使用 buildQuerySql 工具生成SQL语句
+                        - 传入表ID、指标ID列表、时间范围、地区、维度条件
                         
-                        Step 5: SQL构建与执行
-                        - 使用 buildSql 构建SQL查询
-                        - 使用 executeSql 执行查询
-                        
-                        Step 6: 结果格式化
-                        - 使用 translateCodes 翻译编码
-                        - 使用 formatNumber 格式化数值
-                        - 使用 generateSummary 生成摘要
-                        - 使用 suggestQueries 推荐相关问题
+                        Step 5: 查询执行
+                        - 使用 executeQuery 工具执行SQL并获取结果
+                        - 自动翻译编码、返回格式化数据
                         
                         ## 输出要求
                         返回格式化的数据结果，包含：
