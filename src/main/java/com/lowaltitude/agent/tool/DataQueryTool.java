@@ -395,11 +395,17 @@ public class DataQueryTool {
         return translated;
     }
 
-    // 修改：支持多地区（regionCodes 列表）
+    // 修改：支持多地区（regionCodes 列表）和维度条件
     private String generateSql(DataTableConfig table, List<String> indicatorIds,
                                 String timeStart, String timeEnd, List<String> regionCodes, 
                                 Integer regionLevel, String dimensionConditions) {
         StringBuilder sql = new StringBuilder();
+        
+        // 解析维度条件JSON
+        Map<String, List<String>> dimConditions = parseDimensionConditions(dimensionConditions);
+        
+        // 获取维度配置，用于确定维度字段
+        List<Map<String, Object>> dimensionConfigs = getDimensionConfigsInternal(table.getTableId(), true);
         
         sql.append("SELECT ");
         sql.append(table.getTimeColumn()).append(", ");
@@ -408,6 +414,15 @@ public class DataQueryTool {
         if (table.getIndicatorColumn() != null) {
             sql.append(table.getIndicatorColumn()).append(", ");
         }
+        
+        // 添加维度字段到SELECT
+        for (Map<String, Object> dimConfig : dimensionConfigs) {
+            String columnName = (String) dimConfig.get("columnName");
+            if (columnName != null && !columnName.isEmpty()) {
+                sql.append(columnName).append(", ");
+            }
+        }
+        
         sql.append(table.getValueColumn());
         
         sql.append(" FROM ");
@@ -453,6 +468,44 @@ public class DataQueryTool {
             }
         }
         
+        // 添加维度条件到WHERE
+        for (Map.Entry<String, List<String>> entry : dimConditions.entrySet()) {
+            String columnName = entry.getKey();
+            List<String> values = entry.getValue();
+            
+            if (values != null && !values.isEmpty()) {
+                // 查找对应的维度配置，获取默认值
+                String defaultValue = null;
+                for (Map<String, Object> dimConfig : dimensionConfigs) {
+                    if (columnName.equals(dimConfig.get("columnName"))) {
+                        defaultValue = (String) dimConfig.get("defaultValue");
+                        break;
+                    }
+                }
+                
+                // 构建维度条件
+                if (values.size() == 1) {
+                    String value = values.get(0);
+                    // 如果值不等于默认值，添加条件
+                    if (defaultValue == null || !defaultValue.equals(value)) {
+                        conditions.add(columnName + " = '" + value + "'");
+                    }
+                } else {
+                    // 多值时使用IN，排除默认值
+                    List<String> validValues = values.stream()
+                            .filter(v -> defaultValue == null || !defaultValue.equals(v))
+                            .collect(Collectors.toList());
+                    
+                    if (!validValues.isEmpty()) {
+                        String inClause = validValues.stream()
+                                .map(v -> "'" + v + "'")
+                                .collect(Collectors.joining(", "));
+                        conditions.add(columnName + " IN (" + inClause + ")");
+                    }
+                }
+            }
+        }
+        
         if (!conditions.isEmpty()) {
             sql.append(" WHERE ");
             sql.append(String.join(" AND ", conditions));
@@ -464,6 +517,54 @@ public class DataQueryTool {
     }
 
     // ==================== 辅助方法 ====================
+
+    /**
+     * 解析维度条件JSON字符串
+     * 格式: {"edu_level":["3","4"],"exp_level":["2"]}
+     */
+    private Map<String, List<String>> parseDimensionConditions(String dimensionConditions) {
+        Map<String, List<String>> result = new HashMap<>();
+        
+        if (dimensionConditions == null || dimensionConditions.isEmpty() || dimensionConditions.equals("{}")) {
+            return result;
+        }
+        
+        try {
+            // 简单JSON解析（实际项目可使用Jackson或Gson）
+            // 去除首尾大括号
+            String json = dimensionConditions.trim();
+            if (json.startsWith("{")) json = json.substring(1);
+            if (json.endsWith("}")) json = json.substring(0, json.length() - 1);
+            
+            // 按逗号分割键值对
+            String[] pairs = json.split(",");
+            for (String pair : pairs) {
+                String[] kv = pair.split(":");
+                if (kv.length == 2) {
+                    String key = kv[0].trim().replace("\"", "").replace("'", "");
+                    String valueStr = kv[1].trim();
+                    
+                    // 解析值数组
+                    List<String> values = new ArrayList<>();
+                    if (valueStr.startsWith("[") && valueStr.endsWith("]")) {
+                        valueStr = valueStr.substring(1, valueStr.length() - 1);
+                        String[] valueArr = valueStr.split(",");
+                        for (String v : valueArr) {
+                            values.add(v.trim().replace("\"", "").replace("'", ""));
+                        }
+                    } else {
+                        values.add(valueStr.replace("\"", "").replace("'", ""));
+                    }
+                    
+                    result.put(key, values);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to parse dimension conditions: {}", dimensionConditions, e);
+        }
+        
+        return result;
+    }
 
     private boolean isRegionWord(String word) {
         Set<String> regions = Set.of("北京", "上海", "广州", "深圳", "杭州", "全国", "各省", "各地", "城市", "地区");
