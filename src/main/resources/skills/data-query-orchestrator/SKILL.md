@@ -29,14 +29,14 @@ description: |
     }
   ],
   "dimensions": {
-    "timeRange": {"start": "2024-01-01", "end": "2024-06-30"},
+    "timeRange": {"start": "202401", "end": "202406"},
     "region": {"code": "110000", "name": "北京", "level": 2},
     "dimensions": [{"dimensionId": "edu_level", "values": ["3"], "valueNames": ["本科"]}],
     "analysisType": "TREND"
   },
   "sql": "SELECT ... FROM ... WHERE ...",
   "data": [
-    {"time": "2024年6月", "region": "北京", "edu_level": "本科", "value": 12500}
+    {"time_id": "202406", "fact_value": 12500}
   ],
   "summary": "北京近6个月本科招聘薪资呈上涨趋势，平均约12,650元"
 }
@@ -56,17 +56,22 @@ description: |
 **输出**：匹配到的指标列表 + 是否多指标
 
 ### Step 2: 维度解析
-**使用Tool**：`getIndicatorMeta` → `getLatestTime` → `getDimensionValues` → `llmParseDimensions`
+**使用Tool**：`getIndicatorMeta` → `getLatestTime` → `getDimensionConfigs` → `llmParseDimensions`
 
 **流程**：
 1. 获取指标元数据（频率、表ID）
 2. 获取最新数据时间
-3. 获取该表的维度值列表（不含时间、地区）
+3. 获取维度配置（**包含默认值，来自 db_data_dimension.default_value**）
 4. LLM解析：
    - 地区：自然语言 → code + level
    - 时间：基于频率计算范围
    - 其他维度：从提供的列表中匹配
    - 分析类型：TREND/RANKING/COMPARISON/CROSS_SECTION
+
+**默认值说明**：
+- 默认值存储在 `db_data_dimension` 表的 `default_value` 字段
+- 例如：`edu_level` 维度的默认值可能是 `"0"`（代表"不限"）
+- 截面分析时需要排除默认值（`dimension != default_value`）
 
 **特殊处理**：
 - "各省" → level=2，不指定具体region_id
@@ -89,27 +94,33 @@ WHERE
 ORDER BY time_id DESC
 ```
 
+**buildSql Tool 参数**：
+- `tableId`: 表ID
+- `indicatorIds`: 指标ID列表（支持多指标）
+- `timeStart`: 时间开始（格式：yyyyMM）
+- `timeEnd`: 时间结束（格式：yyyyMM）
+- `regionCode`: 地区编码（可选）
+- `regionLevel`: 地区级别（可选，1=全国,2=省级,3=市级,4=区县）
+- `dimensionConditions`: 其他维度条件JSON（可选）
+
 **注意**：
 - 数据表已聚合，**不需要GROUP BY**
-- 时间格式转换：yyyy-MM-dd → yyyy-MM-dd（月表）
-- 截面分析：dimension != '0'（排除默认值）
+- 时间格式转换：yyyy-MM-dd → yyyyMM（月表）
+- 截面分析：`dimension != default_value`（排除默认值）
 
 ### Step 4: 查询执行
-**使用Tool**：`executeOnDataSource` → `translateCodes` → `formatNumbers`
+**使用Tool**：`executeSql`
 
 **流程**：
 1. 在对应数据源执行SQL
-2. 翻译编码：region_id→地区名，edu_level→学历名
-3. 格式化数值：12500→"12,500元"
+2. 返回查询结果
 
 ### Step 5: 结果处理
-**使用Tool**：`generateSummary`
+**使用Tool**：`translateCodes` → `ResultFormatTool`
 
-生成数据摘要：
-- **TREND**：起始值、结束值、趋势（涨/跌/平）、平均值
-- **RANKING**：前几名、排名变化
-- **COMPARISON**：各对比项数值、差异
-- **CROSS_SECTION**：各维度值分布
+- 翻译编码：region_id→地区名，edu_level→学历名
+- 格式化数值：12500→"12,500元"
+- 生成数据摘要和推荐问题
 
 ## 错误处理
 
@@ -128,10 +139,10 @@ ORDER BY time_id DESC
 1. 指标匹配：提取[招聘,薪资]→扩展→向量检索→LLM确认→`招聘岗位平均薪酬`
 2. 维度解析：
    - 地区：北京→code:110000, level:2
-   - 时间：频率M+近6个月→2024-01-31到2024-06-30
-   - 学历：本科→code:3
+   - 时间：频率M+近6个月→202401到202406
+   - 学历：本科→code:3（从db_data_dimension获取默认值"0"表示"不限"）
    - 分析类型：TREND
-3. SQL生成：构建带上述条件的查询
+3. SQL生成：使用buildSql构建带上述条件的查询
 4. 执行查询：返回6个月的数据
 5. 结果处理：生成趋势摘要
 

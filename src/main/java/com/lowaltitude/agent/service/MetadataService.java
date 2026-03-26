@@ -89,6 +89,67 @@ public class MetadataService {
         return dataDimensionConfigRepository.findByTableId(tableId);
     }
 
+    /**
+     * 获取表的维度配置（包含默认值）
+     * 从 db_data_dimension 表中获取 default_value 字段
+     */
+    public List<DimensionConfigWithValues> getTableDimensionConfigs(String tableId, boolean excludeTimeRegion) {
+        List<DataDimensionConfig> dimensions = dataDimensionConfigRepository.findByTableId(tableId);
+
+        if (excludeTimeRegion) {
+            dimensions = dimensions.stream()
+                    .filter(d -> !"time".equals(d.getDimensionId()) && !"region".equals(d.getDimensionId()))
+                    .toList();
+        }
+
+        return dimensions.stream()
+                .map(config -> {
+                    List<DimensionValue> values = dimensionValueRepository.findByDimensionId(config.getDimensionId());
+                    return new DimensionConfigWithValues(config, values);
+                })
+                .toList();
+    }
+
+    /**
+     * 维度配置及其值
+     */
+    public record DimensionConfigWithValues(
+            DataDimensionConfig config,
+            List<DimensionValue> values
+    ) {
+        public String getDimensionId() {
+            return config.getDimensionId();
+        }
+
+        public String getDimensionName() {
+            return config.getDimensionName();
+        }
+
+        public String getColumnName() {
+            return config.getDimensionCode();
+        }
+
+        /**
+         * 获取默认值编码（来自 db_data_dimension.default_value）
+         */
+        public String getDefaultValue() {
+            return config.getDefaultValue();
+        }
+
+        /**
+         * 获取默认值名称
+         */
+        public String getDefaultValueName() {
+            String defaultCode = config.getDefaultValue();
+            if (defaultCode == null) return null;
+            return values.stream()
+                    .filter(v -> defaultCode.equals(v.getValueCode()))
+                    .findFirst()
+                    .map(DimensionValue::getValueName)
+                    .orElse(defaultCode);
+        }
+    }
+
     // ==================== 维度值查询（按表） ====================
 
     public List<DimensionValue> getDimensionValuesByTable(String tableId, boolean excludeTimeRegion) {

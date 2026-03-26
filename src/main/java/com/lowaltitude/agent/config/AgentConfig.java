@@ -17,12 +17,17 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 import java.util.Arrays;
 import java.util.List;
 
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * Agent 配置类
+ * 配置所有智能体：SupervisorAgent（中央协调器）、DataQueryAgent（数据查询）、ChatAgent（闲聊）
+ */
 @Slf4j
 @Configuration
 public class AgentConfig {
@@ -30,7 +35,11 @@ public class AgentConfig {
     @Value("${spring.ai.dashscope.api-key:}")
     private String dashScopeApiKey;
 
+    /**
+     * 创建 ChatModel
+     */
     @Bean
+    @Primary
     public ChatModel chatModel() {
         DashScopeApi dashScopeApi = DashScopeApi.builder()
                 .apiKey(dashScopeApiKey)
@@ -39,13 +48,18 @@ public class AgentConfig {
                 .dashScopeApi(dashScopeApi)
                 .build();
     }
-    
 
+    /**
+     * 动态数据源管理器
+     */
     @Bean
     public DynamicDataSourceManager dynamicDataSourceManager() {
         return new DynamicDataSourceManager();
     }
 
+    /**
+     * Skill 注册表 - 从 classpath 加载 skills
+     */
     @Bean
     public SkillRegistry skillRegistry() {
         return ClasspathSkillRegistry.builder()
@@ -53,6 +67,9 @@ public class AgentConfig {
                 .build();
     }
 
+    /**
+     * Skill 钩子 - 让 Agent 可以调用 read_skill
+     */
     @Bean
     public SkillsAgentHook skillsAgentHook(SkillRegistry skillRegistry) {
         return SkillsAgentHook.builder()
@@ -60,31 +77,36 @@ public class AgentConfig {
                 .build();
     }
 
-    // ==================== Agent定义 ====================
+    // ==================== Agent 定义 ====================
 
     /**
-     * 闲聊Agent - 处理问候、简单问答
+     * 闲聊 Agent - 处理问候、简单问答
      */
     @Bean
     public ReactAgent chatAgent(ChatModel chatModel) {
         return ReactAgent.builder()
                 .name("chat_agent")
                 .model(chatModel)
-                .description("处理闲聊和问候")
+                .description("处理闲聊和问候，友好回应用户")
                 .instruction("""
                         你是低空经济智能体的助手，友好、简洁地回应用户。
                         
                         你的职责：
                         1. 回应问候（你好、谢谢等）
-                        2. 介绍自己的能力（可以查询低空经济指标如招聘薪资、企业数量等）
+                        2. 介绍自己的能力：
+                           - 数据查询：招聘薪资、企业数量、岗位数量、专利数量等
+                           - 趋势分析：时间维度变化
+                           - 排名对比：各省份/城市对比
                         3. 回答关于低空经济的一般性问题
+                        
+                        如果用户询问具体数据，引导用户使用数据查询功能。
                         """)
                 .saver(new MemorySaver())
                 .build();
     }
 
     /**
-     * 数据查询Agent - 使用3-Skill + 2-Tool设计
+     * 数据查询 Agent - 专业处理低空经济数据查询
      */
     @Bean
     public ReactAgent dataQueryAgent(
@@ -92,46 +114,69 @@ public class AgentConfig {
             SkillsAgentHook skillsAgentHook,
             DataQueryTool dataQueryTool,
             ResultFormatTool resultFormatTool) {
-    	List<ToolCallback> toolCallbacks = Arrays.asList(ToolCallbacks.from(dataQueryTool));
-    	List<ToolCallback> toolCallbacks1 = Arrays.asList(ToolCallbacks.from(resultFormatTool));
+        
+        List<ToolCallback> toolCallbacks = Arrays.asList(ToolCallbacks.from(dataQueryTool));
+        List<ToolCallback> toolCallbacks1 = Arrays.asList(ToolCallbacks.from(resultFormatTool));
+        
         return ReactAgent.builder()
                 .name("data_query_agent")
                 .model(chatModel)
-                .description("专业处理低空经济数据查询")
+                .description("专业处理低空经济数据查询，包括招聘、企业、专利等指标")
                 .instruction("""
-                        你是低空经济数据查询专家。使用3-Skill流程完成查询：
+                        你是低空经济数据查询专家。使用 Skills + Tools 完成查询任务。
+                        
+                        ## 核心能力
+                        你可以查询低空经济相关的各类指标数据：
+                        - 招聘类：招聘薪资、岗位数量、招聘企业数
+                        - 企业类：企业数量、新增企业、注册资本分布
+                        - 创新类：专利数量、专利类型分布
                         
                         ## 执行流程
                         
-                        Step 1: 意图路由
-                        - 调用 read_skill("intent-router")
-                        - 判断用户意图：CHAT / DATA_QUERY / UNKNOWN
-                        - 如果是CHAT，直接友好回复
-                        - 如果是DATA_QUERY，继续下一步
-                        
-                        Step 2: 数据查询编排（核心）
+                        Step 1: 读取技能定义
                         - 调用 read_skill("data-query-orchestrator")
-                        - 内部使用DataQueryTool完成：
-                          * extractKeywords → expandSynonyms → vectorSearch（指标召回）
-                          * llmRerank（指标精排，支持多指标）
-                          * getIndicatorMeta, getLatestTime（获取元数据）
-                          * getDimensionValues, llmParseDimensions（维度解析）
-                          * getTableSchema（获取表结构）
-                          * executeSql（执行查询）
-                          * translateCodes（编码翻译）
-                        - 返回：success, indicators, dimensions, data, summary
+                        - 了解数据查询的完整流程
                         
-                        Step 3: 结果展示
-                        - 调用 read_skill("result-presenter")
-                        - 使用ResultFormatTool：
-                          * formatNumber（格式化数值）
-                          * generateSummary（生成摘要）
-                          * suggestQueries（推荐问题）
+                        Step 2: 指标匹配
+                        - 使用 extractKeywords 提取关键词
+                        - 使用 expandSynonyms 扩展同义词
+                        - 使用 vectorSearch 向量检索候选指标
+                        - 使用 llmRerank LLM精排确认指标（支持多指标）
+                        
+                        Step 3: 获取元数据
+                        - 使用 getIndicatorMeta 获取指标详情
+                        - 使用 getLatestTime 获取最新时间
+                        - 使用 getTableSchema 获取表结构
+                        - 使用 getDimensionConfigs 获取维度配置（含默认值）
+                        
+                        Step 4: 维度解析
+                        - 使用 llmParseDimensions LLM解析维度
+                        - 解析地区、时间、其他维度值
+                        - 识别分析类型（趋势/排名/对比）
+                        
+                        Step 5: SQL构建与执行
+                        - 使用 buildSql 构建SQL查询
+                        - 使用 executeSql 执行查询
+                        
+                        Step 6: 结果格式化
+                        - 使用 translateCodes 翻译编码
+                        - 使用 formatNumber 格式化数值
+                        - 使用 generateSummary 生成摘要
+                        - 使用 suggestQueries 推荐相关问题
+                        
+                        ## 输出要求
+                        返回格式化的数据结果，包含：
+                        - 查询的指标名称
+                        - 时间范围和地区
+                        - 数据表格或趋势描述
+                        - 简要分析结论
+                        - 推荐的相关问题
                         
                         ## 注意事项
-                        - 严格按1→2→3顺序执行
-                        - data-query-orchestrator内部已处理多指标、多维度、截面分析
-                        - 如Step 1判定为CHAT，直接回复，不执行后续步骤
+                        - 支持多指标查询（如"薪资和岗位数量"）
+                        - 支持多维度值（如"本科和硕士"）
+                        - 支持截面分析（如"不同学历对比"）- 需排除默认值
+                        - 支持省级/市级排名
                         """)
                 .tools(toolCallbacks)
                 .tools(toolCallbacks1)
@@ -141,7 +186,7 @@ public class AgentConfig {
     }
 
     /**
-     * 文章检索Agent - 预留
+     * 文章检索 Agent - 预留（功能开发中）
      */
     @Bean
     public ReactAgent articleAgent(ChatModel chatModel) {
@@ -149,13 +194,20 @@ public class AgentConfig {
                 .name("article_agent")
                 .model(chatModel)
                 .description("[预留] 文章检索功能")
-                .instruction("该功能正在开发中，请用户稍后再试。回复：文章检索功能即将上线，敬请期待！")
+                .instruction("""
+                        文章检索功能正在开发中。
+                        
+                        请回复用户：
+                        "文章检索功能即将上线，敬请期待！目前您可以：
+                        1. 查询低空经济数据（招聘、企业、专利等）
+                        2. 了解行业趋势和排名"
+                        """)
                 .saver(new MemorySaver())
                 .build();
     }
 
     /**
-     * 政策分析Agent - 预留
+     * 政策分析 Agent - 预留（功能开发中）
      */
     @Bean
     public ReactAgent policyAgent(ChatModel chatModel) {
@@ -163,53 +215,91 @@ public class AgentConfig {
                 .name("policy_agent")
                 .model(chatModel)
                 .description("[预留] 政策分析功能")
-                .instruction("该功能正在开发中，请用户稍后再试。回复：政策分析功能即将上线，敬请期待！")
+                .instruction("""
+                        政策分析功能正在开发中。
+                        
+                        请回复用户：
+                        "政策分析功能即将上线，敬请期待！目前您可以：
+                        1. 查询低空经济数据（招聘、企业、专利等）
+                        2. 了解行业趋势和排名"
+                        """)
                 .saver(new MemorySaver())
                 .build();
     }
 
     /**
-     * SupervisorAgent - 中央协调器
+     * Supervisor Agent - 中央协调器
+     * 负责识别用户意图并路由到合适的子 Agent
      */
     @Bean
-    public ReactAgent supervisorAgent(ChatModel chatModel,
-                                           ReactAgent chatAgent,
-                                           ReactAgent dataQueryAgent,
-                                           ReactAgent articleAgent,
-                                           ReactAgent policyAgent) {
+    @Primary
+    public ReactAgent supervisorAgent(
+            ChatModel chatModel,
+            ReactAgent chatAgent,
+            ReactAgent dataQueryAgent,
+            ReactAgent articleAgent,
+            ReactAgent policyAgent) {
+        
         String systemPrompt = """
-                你是低空经济智能体的入口协调者，负责识别用户意图并路由到合适的Agent。
+                你是低空经济智能体的入口协调者，负责识别用户意图并路由到合适的 Agent。
                 
-                ## 可用的子Agent
+                ## 可用的子 Agent
                 
                 ### chat_agent
                 - **功能**: 处理闲聊、问候、简单问答
-                - **适用场景**: "你好"、"能做什么"、"谢谢"等
-                - **处理方式**: 直接回复，FINISH
+                - **适用场景**: 
+                  * "你好"、"嗨"、"在吗"
+                  * "能做什么"、"有什么功能"
+                  * "谢谢"、"再见"
+                  * 其他一般性问候
+                - **处理方式**: 调用 chat_agent，然后 FINISH
                 
                 ### data_query_agent
-                - **功能**: 处理低空经济数据查询
-                - **适用场景**: 涉及"招聘"、"薪资"、"企业数量"、"岗位"、"专利"、"排名"、"趋势"等
-                - **内部流程**（3-Skill + 2-Tool）:
-                  1. intent-router（意图路由）
-                  2. data-query-orchestrator（查询编排）
-                     - DataQueryTool: 指标匹配→维度解析→SQL执行
-                  3. result-presenter（结果展示）
-                     - ResultFormatTool: 格式化→摘要→推荐
-                - **处理方式**: 单步调用，FINISH
+                - **功能**: 专业处理低空经济数据查询
+                - **适用场景**（关键词判断）:
+                  * 招聘相关：招聘、薪资、工资、薪酬、岗位、职位、招工
+                  * 企业相关：企业数量、公司数、注册企业、新增企业
+                  * 创新相关：专利、发明、实用新型、创新
+                  * 地区相关：北京、上海、深圳、各省、各城市
+                  * 时间相关：近6个月、2024年、趋势、走势
+                  * 分析类型：排名、对比、分布、占比
+                - **处理方式**: 调用 data_query_agent，然后 FINISH
                 
                 ### article_agent
                 - **功能**: 文章检索（开发中）
+                - **适用场景**: 用户要求查询文章、资讯、新闻
+                - **处理方式**: 直接回复"文章检索功能开发中"
                 
                 ### policy_agent
                 - **功能**: 政策分析（开发中）
+                - **适用场景**: 用户要求查询政策、法规、文件
+                - **处理方式**: 直接回复"政策分析功能开发中"
                 
-                ## 决策规则
-                1. **闲聊/问候** → chat_agent → FINISH
-                2. **数据查询**（含指标关键词）→ data_query_agent → FINISH
-                3. **文章需求** → 返回"文章检索功能开发中"
-                4. **政策需求** → 返回"政策分析功能开发中"
-                5. **模糊/无法判断** → chat_agent 进行澄清 → FINISH
+                ## 决策规则（优先级从高到低）
+                
+                1. **问候语/闲聊** → chat_agent
+                   关键词：你好、您好、嗨、在吗、谢谢、再见、帮助、介绍
+                
+                2. **数据查询** → data_query_agent
+                   关键词：招聘、薪资、工资、岗位、企业、专利、数量、排名、趋势、对比
+                   地区词：北京、上海、广州、深圳、各省、各城市、全国
+                   时间词：近X个月、2024年、去年、今年
+                
+                3. **文章资讯** → 回复开发中
+                   关键词：文章、新闻、资讯、报道
+                
+                4. **政策法规** → 回复开发中
+                   关键词：政策、法规、文件、规定
+                
+                5. **模糊/无法判断** → chat_agent 进行澄清
+                
+                ## 执行方式
+                - 使用 AgentTool 调用子 Agent
+                - 单步路由：调用子 Agent 后直接 FINISH
+                - 不需要多轮循环，每个 Agent 都是独立的完整流程
+                
+                ## 响应格式
+                路由决策后，直接调用对应 Agent，将结果返回给用户。
                 """;
 
         return ReactAgent.builder()
@@ -217,8 +307,11 @@ public class AgentConfig {
                 .description("低空经济智能体中央协调器")
                 .model(chatModel)
                 .systemPrompt(systemPrompt)
-                .tools(AgentTool.getFunctionToolCallback(chatAgent),AgentTool.getFunctionToolCallback(dataQueryAgent),AgentTool.getFunctionToolCallback(articleAgent),
-                		AgentTool.getFunctionToolCallback(policyAgent))
+                .tools(AgentTool.getFunctionToolCallback(chatAgent),
+                       AgentTool.getFunctionToolCallback(dataQueryAgent),
+                       AgentTool.getFunctionToolCallback(articleAgent),
+                       AgentTool.getFunctionToolCallback(policyAgent))
+                .saver(new MemorySaver())
                 .build();
     }
 }
