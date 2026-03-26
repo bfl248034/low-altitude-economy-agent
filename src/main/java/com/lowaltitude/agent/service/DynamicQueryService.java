@@ -24,6 +24,7 @@ public class DynamicQueryService {
             JdbcTemplate jdbcTemplate = dataSourceManager.getJdbcTemplate(config);
             return jdbcTemplate.queryForList(sql);
         } catch (Exception e) {
+        	e.printStackTrace();
             log.error("Query execution failed on datasource [{}]: {}", config.getSourceId(), e.getMessage());
             throw new RuntimeException("查询执行失败: " + e.getMessage(), e);
         }

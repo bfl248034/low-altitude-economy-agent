@@ -101,9 +101,10 @@ public class SqlGenerationService {
             if (region.regionLevel() == 1) {
                 // 全国级，不过滤具体地区
             } else {
-                conditions.add(tableConfig.getRegionLevelColumn() + " = " + region.regionLevel());
                 if (region.regionCode() != null && !"0".equals(region.regionCode())) {
                     conditions.add(tableConfig.getRegionColumn() + " = '" + region.regionCode() + "'");
+                }else {
+                	conditions.add(tableConfig.getRegionLevelColumn() + " = " + region.regionLevel());
                 }
             }
         }

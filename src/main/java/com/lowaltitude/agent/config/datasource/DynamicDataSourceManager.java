@@ -69,6 +69,7 @@ public class DynamicDataSourceManager {
         return switch (sourceType.toLowerCase()) {
             case "mysql" -> "com.mysql.cj.jdbc.Driver";
             case "h2" -> "org.h2.Driver";
+            case "kylin" -> "org.apache.kylin.jdbc.Driver";
             default -> throw new IllegalArgumentException("Unknown driver for: " + sourceType);
         };
     }

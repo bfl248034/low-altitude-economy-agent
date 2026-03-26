@@ -12,10 +12,13 @@ import com.lowaltitude.agent.config.datasource.DynamicDataSourceManager;
 import com.lowaltitude.agent.tool.DataQueryTool;
 import com.lowaltitude.agent.tool.ResultFormatTool;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.support.ToolCallbacks;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.Arrays;
 import java.util.List;
 
 import lombok.extern.slf4j.Slf4j;
@@ -89,7 +92,8 @@ public class AgentConfig {
             SkillsAgentHook skillsAgentHook,
             DataQueryTool dataQueryTool,
             ResultFormatTool resultFormatTool) {
-        
+    	List<ToolCallback> toolCallbacks = Arrays.asList(ToolCallbacks.from(dataQueryTool));
+    	List<ToolCallback> toolCallbacks1 = Arrays.asList(ToolCallbacks.from(resultFormatTool));
         return ReactAgent.builder()
                 .name("data_query_agent")
                 .model(chatModel)
@@ -115,7 +119,7 @@ public class AgentConfig {
                           * getTableSchema（获取表结构）
                           * executeSql（执行查询）
                           * translateCodes（编码翻译）
-                        - 返回：{success, indicators, dimensions, data, summary}
+                        - 返回：success, indicators, dimensions, data, summary
                         
                         Step 3: 结果展示
                         - 调用 read_skill("result-presenter")
@@ -129,7 +133,8 @@ public class AgentConfig {
                         - data-query-orchestrator内部已处理多指标、多维度、截面分析
                         - 如Step 1判定为CHAT，直接回复，不执行后续步骤
                         """)
-                .tools(dataQueryTool, resultFormatTool)
+                .tools(toolCallbacks)
+                .tools(toolCallbacks1)
                 .hooks(List.of(skillsAgentHook))
                 .saver(new MemorySaver())
                 .build();
@@ -212,8 +217,8 @@ public class AgentConfig {
                 .description("低空经济智能体中央协调器")
                 .model(chatModel)
                 .systemPrompt(systemPrompt)
-                .tools(AgentTool.create(chatAgent),AgentTool.create(dataQueryAgent),AgentTool.create(articleAgent),
-                		AgentTool.create(policyAgent))
+                .tools(AgentTool.getFunctionToolCallback(chatAgent),AgentTool.getFunctionToolCallback(dataQueryAgent),AgentTool.getFunctionToolCallback(articleAgent),
+                		AgentTool.getFunctionToolCallback(policyAgent))
                 .build();
     }
 }

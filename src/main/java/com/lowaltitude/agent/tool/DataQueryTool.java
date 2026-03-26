@@ -1,5 +1,21 @@
 package com.lowaltitude.agent.tool;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.stereotype.Component;
+
 import com.lowaltitude.agent.entity.DataSourceConfig;
 import com.lowaltitude.agent.entity.DataTableConfig;
 import com.lowaltitude.agent.entity.DimensionValue;
@@ -10,17 +26,9 @@ import com.lowaltitude.agent.service.MetadataService;
 import com.lowaltitude.agent.service.retrieval.InMemoryVectorSearchService;
 import com.lowaltitude.agent.service.retrieval.InMemoryVectorSearchService.IndicatorVector;
 import com.lowaltitude.agent.service.retrieval.SynonymService;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
-import org.springframework.stereotype.Component;
-
-import java.util.*;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
  * 数据查询工具 - 一站式数据查询能力
@@ -140,7 +148,7 @@ public class DataQueryTool {
         
         try {
             String response = chatModel.call(new Prompt(prompt))
-                    .getResult().getOutput().getContent();
+                    .getResult().getOutput().getText();
             return parseRerankResponse(response, candidates);
         } catch (Exception e) {
             log.error("LLM rerank failed", e);
@@ -161,7 +169,7 @@ public class DataQueryTool {
         
         try {
             String response = chatModel.call(new Prompt(prompt))
-                    .getResult().getOutput().getContent();
+                    .getResult().getOutput().getText();
             return Map.of("rawResponse", response, "status", "success");
         } catch (Exception e) {
             log.error("LLM parse failed", e);
@@ -185,7 +193,7 @@ public class DataQueryTool {
                 .orElseGet(() -> Map.of(
                     "indicatorId", indicatorId,
                     "frequency", "M",
-                    "latestTimeId", "202406",
+                    "latestTimeId", "2024-06-30",
                     "latestDate", "2024-06-30"
                 ));
     }
@@ -195,10 +203,12 @@ public class DataQueryTool {
             @ToolParam(description = "表ID") String tableId,
             @ToolParam(description = "是否排除时间和地区") boolean excludeTimeRegion) {
         
-        return metadataService.getDimensionValuesByTable(tableId, excludeTimeRegion)
+    	List<Map<String, Object>> mapList =  metadataService.getDimensionValuesByTable(tableId, excludeTimeRegion)
                 .stream()
                 .map(this::convertDimensionToMap)
                 .collect(Collectors.toList());
+    	
+    	return mapList;
     }
 
     @Tool(name = "getTableSchema", description = "获取数据表的完整结构信息")
@@ -292,7 +302,7 @@ public class DataQueryTool {
         map.put("valueCode", v.getValueCode());
         map.put("valueName", v.getValueName());
         map.put("synonyms", v.getSynonyms());
-        map.put("isDefault", v.getIsDefault());
+//        map.put("isDefault", v.getIsDefault());
         return map;
     }
 
@@ -390,7 +400,7 @@ public class DataQueryTool {
                 %s
                 
                 ## 任务
-                1. 地区解析：自然语言→编码和级别（全国→0/1, 北京→110000/2, 各省→level=2）
+                1. 地区解析：自然语言→编码和级别（全国→100000/1, 北京→110000/2, 各省→level=2）
                 2. 时间计算：基于频率和最新时间ID计算范围
                 3. 维度匹配：从提供的列表中匹配，支持多值
                 4. 分析类型：SINGLE/TREND/RANKING/COMPARISON/CROSS_SECTION

@@ -1,17 +1,21 @@
 package com.lowaltitude.agent.controller;
 
-import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.agent.flow.agent.SupervisorAgent;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Sinks;
-
 import java.util.Map;
 import java.util.Optional;
+
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.alibaba.cloud.ai.graph.OverAllState;
+import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @RestController
@@ -20,7 +24,7 @@ import java.util.Optional;
 @CrossOrigin(origins = "*")
 public class ChatController {
 
-    private final SupervisorAgent supervisorAgent;
+    private final ReactAgent supervisorAgent;
 
     @PostMapping("/chat")
     public ChatResponse chat(@RequestBody ChatRequest request) {
@@ -56,44 +60,44 @@ public class ChatController {
         }
     }
 
-    @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<String> chatStream(@RequestBody ChatRequest request) {
-        log.info("Received stream chat request: {}", request.getMessage());
-        
-        Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
-        
-        supervisorAgent.stream(request.getMessage())
-                .subscribe(
-                        output -> {
-                            String content = extractContent(output);
-                            if (content != null && !content.isEmpty()) {
-                                sink.tryEmitNext("data: " + content + "\n\n");
-                            }
-                        },
-                        error -> {
-                            log.error("Stream error", error);
-                            sink.tryEmitNext("data: [ERROR] " + error.getMessage() + "\n\n");
-                            sink.tryEmitComplete();
-                        },
-                        () -> {
-                            sink.tryEmitNext("data: [DONE]\n\n");
-                            sink.tryEmitComplete();
-                        }
-                );
-        
-        return sink.asFlux();
-    }
+//    @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+//    public Flux<String> chatStream(@RequestBody ChatRequest request) {
+//        log.info("Received stream chat request: {}", request.getMessage());
+//        
+//        Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
+//        
+//        supervisorAgent.stream(request.getMessage())
+//                .subscribe(
+//                        output -> {
+//                            String content = extractContent(output);
+//                            if (content != null && !content.isEmpty()) {
+//                                sink.tryEmitNext("data: " + content + "\n\n");
+//                            }
+//                        },
+//                        error -> {
+//                            log.error("Stream error", error);
+//                            sink.tryEmitNext("data: [ERROR] " + error.getMessage() + "\n\n");
+//                            sink.tryEmitComplete();
+//                        },
+//                        () -> {
+//                            sink.tryEmitNext("data: [DONE]\n\n");
+//                            sink.tryEmitComplete();
+//                        }
+//                );
+//        
+//        return sink.asFlux();
+//    }
 
-    private String extractContent(Object output) {
-        if (output instanceof com.alibaba.cloud.ai.graph.NodeOutput) {
-            com.alibaba.cloud.ai.graph.NodeOutput nodeOutput = (com.alibaba.cloud.ai.graph.NodeOutput) output;
-            Object message = nodeOutput.value();
-            if (message instanceof AssistantMessage) {
-                return ((AssistantMessage) message).getText();
-            }
-        }
-        return output.toString();
-    }
+//    private String extractContent(Object output) {
+//        if (output instanceof com.alibaba.cloud.ai.graph.NodeOutput) {
+//            com.alibaba.cloud.ai.graph.NodeOutput nodeOutput = (com.alibaba.cloud.ai.graph.NodeOutput) output;
+//            Object message = nodeOutput.value();
+//            if (message instanceof AssistantMessage) {
+//                return ((AssistantMessage) message).getText();
+//            }
+//        }
+//        return output.toString();
+//    }
 
     @GetMapping("/health")
     public Map<String, String> health() {
