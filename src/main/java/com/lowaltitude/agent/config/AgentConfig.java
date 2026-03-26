@@ -145,13 +145,38 @@ public class AgentConfig {
                         - 使用 parseDimensions 工具解析维度条件
                         - 自动获取指标元数据、最新时间、维度配置
                         - 使用LLM解析地区、时间、其他维度值
+                        - 支持多地区（如"北京和上海"）
+                        - **时间格式**：统一使用 yyyy-MM-dd（频率最后一天）
+                          * 月度：当月最后一天，如 "2024-06-30"
+                          * 季度：季末最后一天，如 "2024-03-31"
+                          * 年度：年末最后一天，如 "2024-12-31"
                         
                         Step 4: SQL生成
                         - 使用 buildQuerySql 工具生成SQL语句
-                        - 传入表ID、指标ID列表、时间范围、地区、维度条件
+                        - 支持多指标、多地区查询
+                        - regionCodes 参数传入地区编码列表
+                        - **timeStart/timeEnd 格式：yyyy-MM-dd（频率最后一天）**
                         
-                        Step 5: 查询执行
-                        - 使用 executeQuery 工具执行SQL并获取结果
+                        Step 5: 多源并行查询
+                        - 如果多指标来自不同数据源，需要为每个数据源生成SQL
+                        - 使用 executeMultiQuery 工具并行执行多个查询
+                        - 自动合并结果并按时间排序
+                        
+                        ## 多指标跨库查询示例
+                        
+                        用户查询"北京和上海的招聘薪资和企业数量"：
+                        1. matchIndicators 匹配到[招聘薪资, 企业数量]两个指标
+                        2. parseDimensions 解析出地区：codes=["110000","310000"]
+                        3. 检查两个指标的数据源：
+                           - 招聘薪资在 ds_recruitment
+                           - 企业数量在 ds_enterprise
+                        4. 分别生成SQL：
+                           - SQL1: SELECT ... FROM recruitment WHERE region_id IN ('110000','310000')
+                           - SQL2: SELECT ... FROM enterprise WHERE region_id IN ('110000','310000')
+                        5. executeMultiQuery 并行执行两个查询，传入：
+                           [{"sourceId":"ds_recruitment","sql":"SQL1..."},
+                            {"sourceId":"ds_enterprise","sql":"SQL2..."}]
+                        6. 获取合并后的结果，按时间排序
                         - 自动翻译编码、返回格式化数据
                         
                         ## 输出要求

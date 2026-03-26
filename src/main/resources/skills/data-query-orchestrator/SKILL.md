@@ -29,14 +29,14 @@ description: |
     }
   ],
   "dimensions": {
-    "timeRange": {"start": "202401", "end": "202406"},
+    "timeRange": {"start": "2024-01-31", "end": "2024-06-30"},
     "region": {"code": "110000", "name": "北京", "level": 2},
     "dimensions": [{"dimensionId": "edu_level", "values": ["3"], "valueNames": ["本科"]}],
     "analysisType": "TREND"
   },
   "sql": "SELECT ... FROM ... WHERE ...",
   "data": [
-    {"time_id": "202406", "fact_value": 12500}
+    {"time_id": "2024-06-30", "fact_value": 12500}
   ],
   "summary": "北京近6个月本科招聘薪资呈上涨趋势，平均约12,650元"
 }
@@ -80,10 +80,21 @@ description: |
 2. 获取最新数据时间配置
 3. 获取维度配置（**包含默认值，来自 db_data_dimension.default_value**）
 4. LLM解析维度条件：
-   - 地区：自然语言 → code + level
-   - 时间：基于频率计算范围
+   - 地区：自然语言 → code + level，支持多地区
+   - 时间：基于频率计算范围，**输出格式为 yyyy-MM-dd（频率最后一天）**
    - 其他维度：从提供的列表中匹配
    - 分析类型：SINGLE/TREND/RANKING/COMPARISON/CROSS_SECTION
+
+**时间格式说明**：
+- **统一使用 `yyyy-MM-dd` 格式，为指标频率的最后一天**
+- 月度：当月最后一天，如 "2024-06-30"
+- 季度：季末最后一天，如 "2024-03-31"  
+- 年度：年末最后一天，如 "2024-12-31"
+
+**示例**：
+- 频率M + 近6个月：start="2024-01-31", end="2024-06-30"
+- 频率Q + 近4个季度：start="2023-06-30", end="2024-03-31"
+- 频率Y + 近3年：start="2021-12-31", end="2023-12-31"
 
 **默认值说明**：
 - 默认值存储在 `db_data_dimension` 表的 `default_value` 字段
@@ -113,9 +124,9 @@ description: |
 **输入**：
 - `tableId`: 表ID
 - `indicatorIds`: 指标ID列表（支持多指标）
-- `timeStart`: 时间开始（格式：yyyyMM）
-- `timeEnd`: 时间结束（格式：yyyyMM）
-- `regionCode`: 地区编码（可选）
+- `timeStart`: 时间开始（格式：yyyy-MM-dd，频率最后一天）
+- `timeEnd`: 时间结束（格式：yyyy-MM-dd，频率最后一天）
+- `regionCodes`: 地区编码列表（支持多地区，如`["110000","310000"]`）
 - `regionLevel`: 地区级别（可选，1=全国,2=省级,3=市级,4=区县）
 - `dimensionConditions`: 其他维度条件JSON（可选，如`{"edu_level":["3","4"]}`）
 
@@ -125,8 +136,8 @@ SELECT time_id, region_id, region_level_num, indicator_id, [维度字段], fact_
 FROM [表名]
 WHERE 
   indicator_id IN ('id1', 'id2')          -- 多指标
-  AND time_id BETWEEN 'start' AND 'end'   -- 时间范围
-  AND region_id = 'code'                  -- 指定地区（如有）
+  AND time_id BETWEEN 'start' AND 'end'   -- 时间范围（格式：yyyy-MM-dd）
+  AND region_id IN ('code1', 'code2')     -- 多地区
   AND region_level_num = 2                -- 地区级别（如有）
   AND dimension IN ('v1', 'v2')           -- 维度值（如有）
 ORDER BY time_id DESC
@@ -134,7 +145,10 @@ ORDER BY time_id DESC
 
 **注意**：
 - 数据表已聚合，**不需要GROUP BY**
-- 时间格式转换：yyyy-MM-dd → yyyyMM（月表）
+- **时间格式**：统一使用 `yyyy-MM-dd`，为指标频率的最后一天
+  - 月度：当月最后一天，如 "2024-06-30"
+  - 季度：季末最后一天，如 "2024-03-31"
+  - 年度：年末最后一天，如 "2024-12-31"
 - 截面分析：`dimension != default_value`（排除默认值）
 
 **输出**：
@@ -148,27 +162,42 @@ ORDER BY time_id DESC
 }
 ```
 
-### Step 4: 查询执行
-**使用Tool**：`executeQuery`
+### Step 4: 多源并行查询执行
+**使用Tool**：`executeMultiQuery`
 
 **输入**：
-- `sourceId`: 数据源ID
-- `sql`: SQL语句
+- `queryTasks`: 查询任务列表，每项包含 `sourceId` 和 `sql`
+  ```json
+  [
+    {"sourceId": "ds_recruitment", "sql": "SELECT ..."},
+    {"sourceId": "ds_enterprise", "sql": "SELECT ..."}
+  ]
+  ```
 
 **内部流程**：
-1. 获取数据源配置
-2. 执行SQL查询
-3. 自动翻译结果中的编码（如region_id→地区名）
+1. 并行执行所有查询任务（线程池）
+2. 自动翻译结果中的编码（如region_id→地区名）
+3. 合并所有结果，添加数据源标识
+4. 按时间排序返回
 
 **输出**：
 ```json
 {
   "success": true,
-  "data": [...],
-  "rowCount": 6,
-  "dataSource": "数据源名称"
+  "data": [
+    {"time_id": "2024-06-30", "fact_value": 12500, "_dataSource": "招聘数据", "_sourceId": "ds_recruitment"},
+    {"time_id": "2024-06-30", "fact_value": 8900, "_dataSource": "企业数据", "_sourceId": "ds_enterprise"}
+  ],
+  "rowCount": 12,
+  "queryCount": 2,
+  "successCount": 2
 }
 ```
+
+**特点**：
+- 支持多指标跨不同数据源并行查询
+- 自动处理部分查询失败的情况
+- 结果包含数据源标识，便于区分
 
 ### Step 5: 结果处理
 使用 `ResultFormatTool` 完成：
@@ -195,14 +224,14 @@ ORDER BY time_id DESC
    
 2. **维度解析**：调用 `parseDimensions`
    - 地区：北京→code:110000, level:2
-   - 时间：频率M+近6个月→202401到202406
+   - **时间**：频率M + 近6个月→**start:"2024-01-31", end:"2024-06-30"**
    - 学历：本科→code:3（从db_data_dimension获取默认值"0"表示"不限"）
    - 分析类型：TREND
    
 3. **SQL生成**：调用 `buildQuerySql`
-   - 使用解析出的条件构建SQL
+   - 使用解析出的条件构建SQL（时间格式：yyyy-MM-dd）
    
-4. **查询执行**：调用 `executeQuery`
+4. **查询执行**：调用 `executeMultiQuery`
    - 执行SQL，返回6个月的数据
    
 5. **结果处理**：生成趋势摘要
@@ -223,6 +252,6 @@ ORDER BY time_id DESC
 | Tool名 | 功能 | 内部流程 |
 |--------|------|----------|
 | `matchIndicators` | 指标匹配 | 关键词提取→同义词扩展→向量检索→LLM精排 |
-| `parseDimensions` | 维度解析 | 获取元数据→获取维度配置→LLM解析 |
-| `buildQuerySql` | SQL生成 | 获取表结构→构建SQL语句 |
-| `executeQuery` | 查询执行 | 执行SQL→翻译编码→返回结果 |
+| `parseDimensions` | 维度解析 | 获取元数据→获取维度配置→LLM解析（时间格式：yyyy-MM-dd） |
+| `buildQuerySql` | SQL生成 | 获取表结构→构建SQL语句（时间格式：yyyy-MM-dd） |
+| `executeMultiQuery` | 多源并行查询 | 并行执行多数据源查询→合并结果→按时间排序 |
