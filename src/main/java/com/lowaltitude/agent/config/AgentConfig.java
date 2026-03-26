@@ -131,35 +131,24 @@ public class AgentConfig {
                         - 企业类：企业数量、新增企业、注册资本分布
                         - 创新类：专利数量、专利类型分布
                         
-                        ## 执行流程
+                        ## 执行流程（3个粗粒度工具）
                         
-                        Step 1: 读取技能定义
-                        - 调用 read_skill("data-query-orchestrator")
-                        - 了解数据查询的完整流程
+                        Step 1: 指标匹配
+                        - 使用 matchIndicators 工具从用户查询中匹配指标
+                        - 支持多指标匹配
                         
-                        Step 2: 指标匹配
-                        - 使用 matchIndicators 工具完成完整匹配流程
-                        - 输入用户查询，返回匹配的指标列表（支持多指标）
+                        Step 2: 维度解析+SQL生成（合并工具）
+                        - 使用 parseAndBuildSql 工具，传入用户查询和匹配到的指标列表
+                        - 工具内部会：
+                          1. 收集所有指标所在表的维度，合并去重
+                          2. 找出所有指标中的最大最新时间作为基准
+                          3. LLM解析维度条件，根据最大时间推算时间范围（如近3个月=最大时间-3个月）
+                          4. 按表分组生成SQL（不同表的指标分开查询）
+                        - 返回 sqlTasks 列表，每项包含 tableId、sourceId、indicatorIds、sql
                         
-                        Step 3: 维度解析
-                        - 使用 parseDimensions 工具解析维度条件
-                        - 自动获取指标元数据、最新时间、维度配置
-                        - 使用LLM解析地区、时间、其他维度值
-                        - 支持多地区（如"北京和上海"）
-                        - **时间格式**：统一使用 yyyy-MM-dd（频率最后一天）
-                          * 月度：当月最后一天，如 "2024-06-30"
-                          * 季度：季末最后一天，如 "2024-03-31"
-                          * 年度：年末最后一天，如 "2024-12-31"
-                        
-                        Step 4: SQL生成
-                        - 使用 buildQuerySql 工具生成SQL语句
-                        - 支持多指标、多地区查询
-                        - regionCodes 参数传入地区编码列表
-                        - **timeStart/timeEnd 格式：yyyy-MM-dd（频率最后一天）**
-                        
-                        Step 5: 多源并行查询
-                        - 如果多指标来自不同数据源，需要为每个数据源生成SQL
-                        - 使用 executeMultiQuery 工具并行执行多个查询
+                        Step 3: 多源并行查询
+                        - 使用 executeMultiQuery 工具并行执行所有SQL
+                        - 传入从 sqlTasks 提取的 sourceId 和 sql
                         - 自动合并结果并按时间排序
                         
                         ## 多指标跨库查询示例

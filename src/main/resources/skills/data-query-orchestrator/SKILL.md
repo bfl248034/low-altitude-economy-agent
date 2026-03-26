@@ -2,7 +2,7 @@
 name: data-query-orchestrator
 description: |
   数据查询编排器：一站式完成指标匹配、维度解析、SQL生成、查询执行和结果处理。
-  内部流程：指标匹配 → 维度解析 → SQL生成 → 查询执行 → 结果处理
+  内部流程：指标匹配 → 维度解析+SQL生成 → 查询执行
 ---
 
 # 数据查询编排技能 (Data Query Orchestrator)
@@ -13,7 +13,7 @@ description: |
 ## 输入
 ```json
 {
-  "userQuery": "北京近6个月本科招聘薪资"
+  "userQuery": "北京和上海近3个月本科招聘薪资"
 }
 ```
 
@@ -29,20 +29,28 @@ description: |
     }
   ],
   "dimensions": {
-    "timeRange": {"start": "2024-01-31", "end": "2024-06-30"},
-    "region": {"code": "110000", "name": "北京", "level": 2},
+    "timeRange": {"start": "2024-04-30", "end": "2024-06-30"},
+    "region": {"codes": ["110000", "310000"], "name": "北京和上海", "level": 2},
     "dimensions": [{"dimensionId": "edu_level", "values": ["3"], "valueNames": ["本科"]}],
     "analysisType": "TREND"
   },
-  "sql": "SELECT ... FROM ... WHERE ...",
-  "data": [
-    {"time_id": "2024-06-30", "fact_value": 12500}
+  "sqlTasks": [
+    {
+      "tableId": "fact_recruitment",
+      "sourceId": "ds_recruitment",
+      "indicatorIds": ["I_RPA_ICN_RAE_SALARY_AMOUNT"],
+      "sql": "SELECT ... WHERE ..."
+    }
   ],
-  "summary": "北京近6个月本科招聘薪资呈上涨趋势，平均约12,650元"
+  "data": [
+    {"time_id": "2024-06-30", "region_id": "110000", "fact_value": 12500},
+    {"time_id": "2024-06-30", "region_id": "310000", "fact_value": 13200}
+  ],
+  "summary": "北京和上海近3个月本科招聘薪资趋势..."
 }
 ```
 
-## 执行流程（4个粗粒度工具）
+## 执行流程（3个粗粒度工具）
 
 ### Step 1: 指标匹配
 **使用Tool**：`matchIndicators`
@@ -61,108 +69,71 @@ description: |
 ```json
 {
   "success": true,
-  "indicators": [{"indicatorId": "...", "indicatorName": "...", "matchScore": 0.95}],
-  "isMultiMetric": false,
+  "indicators": [
+    {
+      "indicatorId": "...",
+      "indicatorName": "...",
+      "tableId": "...",
+      "sourceId": "...",
+      "matchScore": 0.95
+    }
+  ],
+  "isMultiMetric": true,
   "reasoning": "匹配理由",
   "keywords": ["关键词列表"]
 }
 ```
 
-### Step 2: 维度解析
-**使用Tool**：`parseDimensions`
+### Step 2: 维度解析 + SQL生成（合并工具）
+**使用Tool**：`parseAndBuildSql`
 
 **输入**：
 - `query`: 用户原始查询
-- `indicatorIds`: 匹配到的指标ID列表
+- `indicators`: 匹配到的指标列表（包含 indicatorId, tableId, sourceId）
 
 **内部流程**：
-1. 获取指标元数据（频率、表ID）
-2. 获取最新数据时间配置
-3. 获取维度配置（**包含默认值，来自 db_data_dimension.default_value**）
-4. LLM解析维度条件：
-   - 地区：自然语言 → code + level，支持多地区
-   - 时间：基于频率计算范围，**输出格式为 yyyy-MM-dd（频率最后一天）**
-   - 其他维度：从提供的列表中匹配
-   - 分析类型：SINGLE/TREND/RANKING/COMPARISON/CROSS_SECTION
+1. **收集所有指标信息**：遍历所有指标，获取元数据、最新时间、维度配置
+2. **找出最大最新时间**：所有指标中最新时间的最大值作为基准
+3. **合并维度集合**：收集所有指标所在表的维度，去重后交给LLM
+4. **LLM解析维度**（传入最大时间用于推算）：
+   - 地区：支持多地区（如"北京和上海"→codes:["110000","310000"]）
+   - 时间：**根据最大时间推算**（如近3个月=最大时间-3个月）
+   - 其他维度：从合并后的维度集合中匹配
+   - 分析类型：TREND/RANKING/COMPARISON/CROSS_SECTION
+5. **按表分组生成SQL**：不同表的指标生成独立的SQL语句
 
-**时间格式说明**：
-- **统一使用 `yyyy-MM-dd` 格式，为指标频率的最后一天**
-- 月度：当月最后一天，如 "2024-06-30"
-- 季度：季末最后一天，如 "2024-03-31"  
-- 年度：年末最后一天，如 "2024-12-31"
-
-**示例**：
-- 频率M + 近6个月：start="2024-01-31", end="2024-06-30"
-- 频率Q + 近4个季度：start="2023-06-30", end="2024-03-31"
-- 频率Y + 近3年：start="2021-12-31", end="2023-12-31"
-
-**默认值说明**：
-- 默认值存储在 `db_data_dimension` 表的 `default_value` 字段
-- 例如：`edu_level` 维度的默认值可能是 `"0"`（代表"不限"）
-- 截面分析时需要排除默认值（`dimension != default_value`）
-
-**特殊处理**：
-- "各省" → level=2，不指定具体region_id
-- "本科和硕士" → values=["3","4"]
-- "不同学历" → analysisType=CROSS_SECTION，排除默认值
+**时间推算规则**（基于最大最新时间）：
+- "近3个月" → 开始时间 = 最大时间往前推3个月的最后一天，结束时间 = 最大时间
+- "近6个月" → 开始时间 = 最大时间往前推6个月的最后一天
+- "今年" → 开始时间 = 当年1月1日，结束时间 = 最大时间
+- "去年" → 开始时间 = 去年1月1日，结束时间 = 去年12月31日
+- 默认（未指定时间）→ 近6个月
 
 **输出**：
 ```json
 {
   "success": true,
-  "indicatorMeta": {...},
-  "latestTime": {...},
-  "dimensionConfigs": [...],
-  "parsedDimensions": {"rawResponse": "LLM解析结果"},
-  "tableId": "表ID"
+  "indicators": [...],
+  "indicatorIds": ["..."],
+  "allDimensions": [...],
+  "maxLatestDate": "2024-06-30",
+  "frequency": "M",
+  "timeRange": {"start": "2024-04-30", "end": "2024-06-30"},
+  "regionCodes": ["110000", "310000"],
+  "regionLevel": 2,
+  "dimensionConditions": {"edu_level": ["3"]},
+  "sqlTasks": [
+    {
+      "tableId": "fact_recruitment",
+      "sourceId": "ds_recruitment",
+      "indicatorIds": ["I_RPA_ICN_RAE_SALARY_AMOUNT"],
+      "sql": "SELECT time_id, region_id, ... WHERE ..."
+    }
+  ]
 }
 ```
 
-### Step 3: SQL生成
-**使用Tool**：`buildQuerySql`
-
-**输入**：
-- `tableId`: 表ID
-- `indicatorIds`: 指标ID列表（支持多指标）
-- `timeStart`: 时间开始（格式：yyyy-MM-dd，频率最后一天）
-- `timeEnd`: 时间结束（格式：yyyy-MM-dd，频率最后一天）
-- `regionCodes`: 地区编码列表（支持多地区，如`["110000","310000"]`）
-- `regionLevel`: 地区级别（可选，1=全国,2=省级,3=市级,4=区县）
-- `dimensionConditions`: 其他维度条件JSON（可选，如`{"edu_level":["3","4"]}`）
-
-**生成规则**：
-```sql
-SELECT time_id, region_id, region_level_num, indicator_id, [维度字段], fact_value
-FROM [表名]
-WHERE 
-  indicator_id IN ('id1', 'id2')          -- 多指标
-  AND time_id BETWEEN 'start' AND 'end'   -- 时间范围（格式：yyyy-MM-dd）
-  AND region_id IN ('code1', 'code2')     -- 多地区
-  AND region_level_num = 2                -- 地区级别（如有）
-  AND dimension IN ('v1', 'v2')           -- 维度值（如有）
-ORDER BY time_id DESC
-```
-
-**注意**：
-- 数据表已聚合，**不需要GROUP BY**
-- **时间格式**：统一使用 `yyyy-MM-dd`，为指标频率的最后一天
-  - 月度：当月最后一天，如 "2024-06-30"
-  - 季度：季末最后一天，如 "2024-03-31"
-  - 年度：年末最后一天，如 "2024-12-31"
-- 截面分析：`dimension != default_value`（排除默认值）
-
-**输出**：
-```json
-{
-  "success": true,
-  "sql": "SELECT ...",
-  "tableId": "表ID",
-  "sourceId": "数据源ID",
-  "tableSchema": {...}
-}
-```
-
-### Step 4: 多源并行查询执行
+### Step 3: 多源并行查询执行
 **使用Tool**：`executeMultiQuery`
 
 **输入**：
@@ -185,12 +156,12 @@ ORDER BY time_id DESC
 {
   "success": true,
   "data": [
-    {"time_id": "2024-06-30", "fact_value": 12500, "_dataSource": "招聘数据", "_sourceId": "ds_recruitment"},
-    {"time_id": "2024-06-30", "fact_value": 8900, "_dataSource": "企业数据", "_sourceId": "ds_enterprise"}
+    {"time_id": "2024-06-30", "region_id": "110000", "fact_value": 12500, "_dataSource": "招聘数据", "_sourceId": "ds_recruitment"},
+    {"time_id": "2024-06-30", "region_id": "310000", "fact_value": 13200, "_dataSource": "招聘数据", "_sourceId": "ds_recruitment"}
   ],
   "rowCount": 12,
-  "queryCount": 2,
-  "successCount": 2
+  "queryCount": 1,
+  "successCount": 1
 }
 ```
 
@@ -199,7 +170,7 @@ ORDER BY time_id DESC
 - 自动处理部分查询失败的情况
 - 结果包含数据源标识，便于区分
 
-### Step 5: 结果处理
+### Step 4: 结果处理
 使用 `ResultFormatTool` 完成：
 - 格式化数值：12500→"12,500元"
 - 生成数据摘要
@@ -210,41 +181,48 @@ ORDER BY time_id DESC
 | 错误场景 | 处理方式 |
 |---------|---------|
 | 未匹配到指标 | 返回`success:false`，建议用户换种说法 |
-| 维度解析失败 | 使用默认值继续 |
-| SQL执行失败 | 返回错误信息 |
+| 维度解析失败 | 使用默认时间范围（近6个月）和地区（全国）继续 |
+| SQL执行失败 | 返回错误信息，其他查询继续执行 |
 | 无数据 | 返回`rowCount:0`，提示无数据 |
 
 ## 完整示例
 
-**输入**："北京近6个月本科招聘薪资"
+**输入**："北京和上海近3个月本科招聘薪资"
 
 **处理过程**：
 1. **指标匹配**：调用 `matchIndicators`
-   - 提取[招聘,薪资]→扩展→向量检索→LLM确认→`招聘岗位平均薪酬`
+   - 匹配到 `招聘岗位平均薪酬` 指标
+   - 返回指标信息（含tableId, sourceId）
    
-2. **维度解析**：调用 `parseDimensions`
-   - 地区：北京→code:110000, level:2
-   - **时间**：频率M + 近6个月→**start:"2024-01-31", end:"2024-06-30"**
-   - 学历：本科→code:3（从db_data_dimension获取默认值"0"表示"不限"）
-   - 分析类型：TREND
+2. **维度解析+SQL生成**：调用 `parseAndBuildSql`
+   - 收集维度：该指标所在表的维度（edu_level等）
+   - 找出最大时间：假设为 "2024-06-30"
+   - LLM解析：
+     - 地区：北京和上海 → codes:["110000","310000"]
+     - 时间：近3个月 → start="2024-04-30", end="2024-06-30"（最大时间往前推3个月）
+     - 学历：本科 → edu_level:["3"]
+   - 生成SQL：包含多地区条件和维度条件
    
-3. **SQL生成**：调用 `buildQuerySql`
-   - 使用解析出的条件构建SQL（时间格式：yyyy-MM-dd）
+3. **查询执行**：调用 `executeMultiQuery`
+   - 执行SQL，返回北京和上海的数据
    
-4. **查询执行**：调用 `executeMultiQuery`
-   - 执行SQL，返回6个月的数据
-   
-5. **结果处理**：生成趋势摘要
+4. **结果处理**：生成趋势摘要
 
 **输出**：
 ```
-北京近6个月本科招聘薪资趋势：
-- 2024年1月：12,300元
-- 2024年2月：12,500元
-- ...
-- 2024年6月：12,800元
+北京和上海近3个月本科招聘薪资：
 
-整体呈上涨趋势，平均薪资约12,650元。
+北京：
+- 2024年4月：12,000元
+- 2024年5月：12,300元
+- 2024年6月：12,500元
+
+上海：
+- 2024年4月：12,800元
+- 2024年5月：13,000元
+- 2024年6月：13,200元
+
+两地平均薪资呈上涨趋势，上海略高于北京。
 ```
 
 ## Tool列表
@@ -252,6 +230,31 @@ ORDER BY time_id DESC
 | Tool名 | 功能 | 内部流程 |
 |--------|------|----------|
 | `matchIndicators` | 指标匹配 | 关键词提取→同义词扩展→向量检索→LLM精排 |
-| `parseDimensions` | 维度解析 | 获取元数据→获取维度配置→LLM解析（时间格式：yyyy-MM-dd） |
-| `buildQuerySql` | SQL生成 | 获取表结构→构建SQL语句（时间格式：yyyy-MM-dd） |
-| `executeMultiQuery` | 多源并行查询 | 并行执行多数据源查询→合并结果→按时间排序 |
+| `parseAndBuildSql` | 维度解析+SQL生成 | 收集所有指标维度→找出最大时间→LLM解析→生成SQL |
+| `executeMultiQuery` | 多源并行查询 | 并行执行→合并结果→按时间排序 |
+
+## 多表多源查询场景
+
+当用户查询涉及不同表的指标时（如"招聘薪资和企业数量"）：
+
+1. `matchIndicators` 匹配到多个指标，包含各自的 tableId 和 sourceId
+2. `parseAndBuildSql` 按 tableId 分组，为每个表生成独立的 SQL
+3. `executeMultiQuery` 并行执行所有 SQL，合并结果
+
+示例 sqlTasks 输出：
+```json
+[
+  {
+    "tableId": "fact_recruitment",
+    "sourceId": "ds_recruitment",
+    "indicatorIds": ["I_RPA_ICN_RAE_SALARY_AMOUNT"],
+    "sql": "SELECT ... FROM fact_recruitment WHERE ..."
+  },
+  {
+    "tableId": "fact_enterprise",
+    "sourceId": "ds_enterprise",
+    "indicatorIds": ["I_ENT_COUNT"],
+    "sql": "SELECT ... FROM fact_enterprise WHERE ..."
+  }
+]
+```

@@ -21,17 +21,19 @@ import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.TemporalAdjusters;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * 数据查询工具 - 4个粗粒度工具
+ * 数据查询工具 - 3个粗粒度工具
  * 1. matchIndicators: 指标匹配（关键词提取→同义词扩展→向量检索→LLM精排）
- * 2. parseDimensions: 维度解析（获取元数据→获取维度配置→LLM解析维度条件）
- * 3. buildQuerySql: SQL生成（获取表结构→构建SQL）
- * 4. executeMultiQuery: 多源并行查询执行（支持多指标跨库并行查询、多地区查询）
+ * 2. parseAndBuildSql: 维度解析+SQL生成（获取所有指标维度→LLM解析→生成SQL）
+ * 3. executeMultiQuery: 多源并行查询执行
  */
 @Slf4j
 @Component
@@ -44,8 +46,8 @@ public class DataQueryTool {
     private final DynamicQueryService dynamicQueryService;
     private final ChatModel chatModel;
     
-    // 线程池用于并行查询
     private final ExecutorService queryExecutor = Executors.newFixedThreadPool(10);
+    private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
     // ==================== Tool 1: 指标匹配 ====================
 
@@ -87,84 +89,162 @@ public class DataQueryTool {
         }
     }
 
-    // ==================== Tool 2: 维度解析 ====================
+    // ==================== Tool 2: 维度解析+SQL生成（合并） ====================
 
-    @Tool(name = "parseDimensions", description = "维度解析：解析查询中的维度条件（时间、多地区、其他维度）。流程：获取指标元数据→获取维度配置→LLM解析")
-    public Map<String, Object> parseDimensions(
+    @Tool(name = "parseAndBuildSql", description = "维度解析+SQL生成：获取所有指标的维度合集→LLM解析维度→根据最大时间推算时间→生成SQL。支持多指标、多地区")
+    public Map<String, Object> parseAndBuildSql(
             @ToolParam(description = "用户原始查询") String query,
-            @ToolParam(description = "匹配到的指标ID列表") List<String> indicatorIds) {
+            @ToolParam(description = "匹配到的指标列表（包含indicatorId, tableId, sourceId等）") List<Map<String, Object>> indicators) {
         
-        log.info("Parsing dimensions for query: {}, indicators: {}", query, indicatorIds);
+        log.info("Parsing dimensions and building SQL for {} indicators", indicators.size());
         
         try {
-            String primaryIndicatorId = indicatorIds.get(0);
-            Map<String, Object> indicatorMeta = getIndicatorMetaInternal(primaryIndicatorId);
+            // 1. 收集所有指标的信息
+            List<String> indicatorIds = new ArrayList<>();
+            Map<String, Map<String, Object>> indicatorMetaMap = new HashMap<>();
+            Map<String, List<Map<String, Object>>> tableDimensionsMap = new HashMap<>();
+            Map<String, Map<String, Object>> tableSchemaMap = new HashMap<>();
+            Set<String> tableIds = new HashSet<>();
             
-            if (indicatorMeta.containsKey("error")) {
-                return Map.of("success", false, "error", indicatorMeta.get("error"));
+            // 找出所有指标中的最大时间
+            LocalDate maxLatestDate = null;
+            String maxFrequency = "M"; // 默认月度
+            
+            for (Map<String, Object> ind : indicators) {
+                String indicatorId = (String) ind.get("indicatorId");
+                String tableId = (String) ind.get("tableId");
+                indicatorIds.add(indicatorId);
+                tableIds.add(tableId);
+                
+                // 获取指标元数据
+                Map<String, Object> meta = getIndicatorMetaInternal(indicatorId);
+                indicatorMetaMap.put(indicatorId, meta);
+                
+                // 获取最新时间，找出最大值
+                Map<String, Object> latestTime = getLatestTimeInternal(indicatorId);
+                String latestDateStr = (String) latestTime.get("latestDate");
+                String frequency = (String) latestTime.getOrDefault("frequency", "M");
+                
+                if (latestDateStr != null && !latestDateStr.isEmpty()) {
+                    try {
+                        LocalDate latestDate = parseDate(latestDateStr);
+                        if (maxLatestDate == null || latestDate.isAfter(maxLatestDate)) {
+                            maxLatestDate = latestDate;
+                            maxFrequency = frequency;
+                        }
+                    } catch (Exception e) {
+                        log.warn("Failed to parse latest date: {}", latestDateStr);
+                    }
+                }
+                
+                // 获取该指标所在表的维度配置（去重）
+                if (!tableDimensionsMap.containsKey(tableId)) {
+                    List<Map<String, Object>> dims = getDimensionConfigsInternal(tableId, true);
+                    tableDimensionsMap.put(tableId, dims);
+                }
+                
+                // 获取表结构
+                if (!tableSchemaMap.containsKey(tableId)) {
+                    Map<String, Object> schema = getTableSchemaInternal(tableId);
+                    tableSchemaMap.put(tableId, schema);
+                }
             }
             
-            Map<String, Object> latestTime = getLatestTimeInternal(primaryIndicatorId);
-            String tableId = (String) indicatorMeta.get("tableId");
-            List<Map<String, Object>> dimensionConfigs = getDimensionConfigsInternal(tableId, true);
+            // 如果无法解析最大时间，使用默认值
+            if (maxLatestDate == null) {
+                maxLatestDate = LocalDate.of(2024, 6, 30);
+            }
             
-            // LLM解析维度（支持多地区）
-            Map<String, Object> parseResult = llmParseDimensionsInternal(query, 
-                toJson(indicatorMeta), toJson(dimensionConfigs));
+            // 2. 合并所有维度（去重）
+            Map<String, Map<String, Object>> mergedDimensions = new LinkedHashMap<>();
+            for (List<Map<String, Object>> dims : tableDimensionsMap.values()) {
+                for (Map<String, Object> dim : dims) {
+                    String dimId = (String) dim.get("dimensionId");
+                    if (!mergedDimensions.containsKey(dimId)) {
+                        mergedDimensions.put(dimId, dim);
+                    }
+                }
+            }
+            List<Map<String, Object>> allDimensions = new ArrayList<>(mergedDimensions.values());
+            
+            // 3. LLM解析维度（传入最大时间用于计算）
+            Map<String, Object> parseResult = llmParseDimensionsWithMaxTime(
+                query, 
+                toJson(indicators), 
+                toJson(allDimensions),
+                maxLatestDate.format(DATE_FORMATTER),
+                maxFrequency
+            );
+            
+            // 4. 解析LLM返回的时间范围
+            TimeRange timeRange = extractTimeRange(parseResult, maxLatestDate, maxFrequency);
+            
+            // 5. 解析地区
+            List<String> regionCodes = extractRegionCodes(parseResult);
+            Integer regionLevel = extractRegionLevel(parseResult);
+            
+            // 6. 解析维度条件
+            String dimensionConditions = extractDimensionConditions(parseResult);
+            
+            // 7. 按表分组生成SQL（不同表的指标需要分开查询）
+            List<Map<String, Object>> sqlTasks = new ArrayList<>();
+            
+            // 按tableId分组指标
+            Map<String, List<String>> tableIndicatorMap = new HashMap<>();
+            for (Map<String, Object> ind : indicators) {
+                String tableId = (String) ind.get("tableId");
+                String indicatorId = (String) ind.get("indicatorId");
+                tableIndicatorMap.computeIfAbsent(tableId, k -> new ArrayList<>()).add(indicatorId);
+            }
+            
+            // 为每个表生成SQL
+            for (Map.Entry<String, List<String>> entry : tableIndicatorMap.entrySet()) {
+                String tableId = entry.getKey();
+                List<String> tableIndicatorIds = entry.getValue();
+                
+                DataTableConfig table = metadataService.getDataTable(tableId).orElse(null);
+                if (table == null) continue;
+                
+                String sql = generateSql(
+                    table, 
+                    tableIndicatorIds, 
+                    timeRange.start.format(DATE_FORMATTER), 
+                    timeRange.end.format(DATE_FORMATTER),
+                    regionCodes,
+                    regionLevel,
+                    dimensionConditions
+                );
+                
+                sqlTasks.add(Map.of(
+                    "tableId", tableId,
+                    "sourceId", table.getSourceId(),
+                    "indicatorIds", tableIndicatorIds,
+                    "sql", sql
+                ));
+            }
             
             return Map.of(
                 "success", true,
-                "indicatorMeta", indicatorMeta,
-                "latestTime", latestTime,
-                "dimensionConfigs", dimensionConfigs,
+                "indicators", indicators,
+                "indicatorIds", indicatorIds,
+                "allDimensions", allDimensions,
+                "maxLatestDate", maxLatestDate.format(DATE_FORMATTER),
+                "frequency", maxFrequency,
                 "parsedDimensions", parseResult,
-                "tableId", tableId
+                "timeRange", Map.of("start", timeRange.start.format(DATE_FORMATTER), "end", timeRange.end.format(DATE_FORMATTER)),
+                "regionCodes", regionCodes,
+                "regionLevel", regionLevel,
+                "dimensionConditions", dimensionConditions,
+                "sqlTasks", sqlTasks
             );
             
         } catch (Exception e) {
-            log.error("Dimension parsing failed", e);
+            log.error("Parse and build SQL failed", e);
             return Map.of("success", false, "error", e.getMessage());
         }
     }
 
-    // ==================== Tool 3: SQL生成 ====================
-
-    @Tool(name = "buildQuerySql", description = "SQL生成：根据指标和维度条件生成查询SQL。支持多指标、多地区（regionCodes为列表如['110000','310000']）")
-    public Map<String, Object> buildQuerySql(
-            @ToolParam(description = "表ID") String tableId,
-            @ToolParam(description = "指标ID列表（支持多指标）") List<String> indicatorIds,
-            @ToolParam(description = "时间范围开始（格式：yyyy-MM-dd，频率最后一天）") String timeStart,
-            @ToolParam(description = "时间范围结束（格式：yyyy-MM-dd，频率最后一天）") String timeEnd,
-            @ToolParam(description = "地区编码列表（支持多地区，如['110000','310000']）") List<String> regionCodes,
-            @ToolParam(description = "地区级别（1=全国,2=省级,3=市级,4=区县，可选）") Integer regionLevel,
-            @ToolParam(description = "其他维度条件JSON，如{\"edu_level\":[\"3\",\"4\"]}") String dimensionConditions) {
-        
-        log.info("Building SQL for table: {}, indicators: {}, regions: {}", tableId, indicatorIds, regionCodes);
-        
-        try {
-            Map<String, Object> tableSchema = getTableSchemaInternal(tableId);
-            if (tableSchema.containsKey("error")) {
-                return Map.of("success", false, "error", tableSchema.get("error"));
-            }
-            
-            DataTableConfig table = metadataService.getDataTable(tableId).orElseThrow();
-            String sql = generateSql(table, indicatorIds, timeStart, timeEnd, regionCodes, regionLevel, dimensionConditions);
-            
-            return Map.of(
-                "success", true,
-                "sql", sql,
-                "tableId", tableId,
-                "sourceId", table.getSourceId(),
-                "tableSchema", tableSchema
-            );
-            
-        } catch (Exception e) {
-            log.error("SQL generation failed", e);
-            return Map.of("success", false, "error", e.getMessage());
-        }
-    }
-
-    // ==================== Tool 4: 多源并行查询执行 ====================
+    // ==================== Tool 3: 多源并行查询执行 ====================
 
     @Tool(name = "executeMultiQuery", description = "多源并行查询执行：支持多指标跨不同数据源并行查询，自动合并结果。每个查询包含sourceId和sql")
     public Map<String, Object> executeMultiQuery(
@@ -173,7 +253,6 @@ public class DataQueryTool {
         log.info("Executing {} parallel queries", queryTasks.size());
         
         try {
-            // 并行执行所有查询
             List<Future<QueryResult>> futures = new ArrayList<>();
             
             for (Map<String, String> task : queryTasks) {
@@ -186,8 +265,6 @@ public class DataQueryTool {
                                 .orElseThrow(() -> new RuntimeException("数据源不存在: " + sourceId));
                         
                         List<Map<String, Object>> results = dynamicQueryService.executeQuery(config, sql);
-                        
-                        // 翻译结果中的编码
                         List<Map<String, Object>> translatedResults = results.stream()
                             .map(this::translateResultCodes)
                             .collect(Collectors.toList());
@@ -202,7 +279,6 @@ public class DataQueryTool {
                 futures.add(future);
             }
             
-            // 收集结果
             List<Map<String, Object>> allResults = new ArrayList<>();
             List<Map<String, Object>> errors = new ArrayList<>();
             int totalRowCount = 0;
@@ -213,7 +289,6 @@ public class DataQueryTool {
                     if (result.error() != null) {
                         errors.add(Map.of("sourceId", result.sourceId(), "error", result.error()));
                     } else {
-                        // 添加数据源信息到每条记录
                         for (Map<String, Object> row : result.data()) {
                             row.put("_dataSource", result.sourceName());
                             row.put("_sourceId", result.sourceId());
@@ -226,7 +301,6 @@ public class DataQueryTool {
                 }
             }
             
-            // 按时间排序合并结果
             allResults.sort((a, b) -> {
                 String timeA = String.valueOf(a.getOrDefault("time_id", ""));
                 String timeB = String.valueOf(b.getOrDefault("time_id", ""));
@@ -252,27 +326,143 @@ public class DataQueryTool {
         }
     }
 
-    // 保留单数据源查询方法（内部使用）
-    private Map<String, Object> executeQueryInternal(String sourceId, String sql) {
-        try {
-            DataSourceConfig config = metadataService.getDataSource(sourceId)
-                    .orElseThrow(() -> new RuntimeException("数据源不存在: " + sourceId));
-            
-            List<Map<String, Object>> results = dynamicQueryService.executeQuery(config, sql);
-            List<Map<String, Object>> translatedResults = results.stream()
-                .map(this::translateResultCodes)
-                .collect(Collectors.toList());
-            
-            return Map.of(
-                "success", true,
-                "data", translatedResults,
-                "rowCount", results.size(),
-                "sourceName", config.getSourceName()
-            );
-        } catch (Exception e) {
-            log.error("Query execution failed", e);
-            return Map.of("success", false, "error", e.getMessage());
+    // ==================== 时间计算相关 ====================
+
+    private record TimeRange(LocalDate start, LocalDate end) {}
+
+    private LocalDate parseDate(String dateStr) {
+        // 支持多种格式：yyyy-MM-dd, yyyyMMdd, yyyy-MM, yyyyMM
+        dateStr = dateStr.trim();
+        if (dateStr.contains("-")) {
+            if (dateStr.length() <= 7) { // yyyy-MM
+                return LocalDate.parse(dateStr + "-01", DATE_FORMATTER);
+            }
+            return LocalDate.parse(dateStr.substring(0, 10), DATE_FORMATTER);
+        } else {
+            if (dateStr.length() == 6) { // yyyyMM
+                return LocalDate.parse(dateStr + "01", DateTimeFormatter.ofPattern("yyyyMMdd"));
+            } else if (dateStr.length() == 8) { // yyyyMMdd
+                return LocalDate.parse(dateStr, DateTimeFormatter.ofPattern("yyyyMMdd"));
+            }
         }
+        return LocalDate.parse(dateStr.substring(0, Math.min(dateStr.length(), 10)), DATE_FORMATTER);
+    }
+
+    private TimeRange extractTimeRange(Map<String, Object> parseResult, LocalDate maxLatestDate, String frequency) {
+        try {
+            // 尝试从LLM解析结果中提取时间范围
+            Object timeRangeObj = parseResult.get("timeRange");
+            if (timeRangeObj instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> timeRange = (Map<String, Object>) timeRangeObj;
+                String start = (String) timeRange.get("start");
+                String end = (String) timeRange.get("end");
+                if (start != null && end != null) {
+                    return new TimeRange(parseDate(start), parseDate(end));
+                }
+            }
+            
+            // 从rawResponse中解析
+            String rawResponse = (String) parseResult.getOrDefault("rawResponse", "");
+            
+            // 尝试匹配时间范围
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
+                "(\d{4}-\d{2}-\d{2}).*?(\d{4}-\d{2}-\d{2})");
+            java.util.regex.Matcher matcher = pattern.matcher(rawResponse);
+            if (matcher.find()) {
+                return new TimeRange(
+                    LocalDate.parse(matcher.group(1), DATE_FORMATTER),
+                    LocalDate.parse(matcher.group(2), DATE_FORMATTER)
+                );
+            }
+        } catch (Exception e) {
+            log.warn("Failed to extract time range from parse result, using default calculation");
+        }
+        
+        // 默认计算：根据频率和最大时间往前推
+        LocalDate end = maxLatestDate;
+        LocalDate start;
+        
+        switch (frequency.toUpperCase()) {
+            case "D": // 日度，默认近30天
+                start = end.minusDays(30);
+                break;
+            case "M": // 月度，默认近6个月
+                start = end.minusMonths(6).with(TemporalAdjusters.lastDayOfMonth());
+                break;
+            case "Q": // 季度，默认近4个季度
+                start = end.minusMonths(12).with(TemporalAdjusters.lastDayOfMonth());
+                break;
+            case "Y": // 年度，默认近3年
+                start = end.minusYears(3).with(TemporalAdjusters.lastDayOfYear());
+                break;
+            default: // 默认月度近6个月
+                start = end.minusMonths(6).with(TemporalAdjusters.lastDayOfMonth());
+        }
+        
+        return new TimeRange(start, end);
+    }
+
+    // ==================== 解析LLM结果 ====================
+
+    @SuppressWarnings("unchecked")
+    private List<String> extractRegionCodes(Map<String, Object> parseResult) {
+        List<String> codes = new ArrayList<>();
+        try {
+            Object regionObj = parseResult.get("region");
+            if (regionObj instanceof Map) {
+                Map<String, Object> region = (Map<String, Object>) regionObj;
+                Object codesObj = region.get("codes");
+                if (codesObj instanceof List) {
+                    codes = ((List<Object>) codesObj).stream()
+                        .map(Object::toString)
+                        .collect(Collectors.toList());
+                }
+            }
+            
+            // 如果没有解析到，尝试从rawResponse中匹配
+            if (codes.isEmpty()) {
+                String rawResponse = (String) parseResult.getOrDefault("rawResponse", "");
+                // 匹配地区编码格式
+                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("(11|12|13|14|15|21|22|23|31|32|33|34|35|36|37|41|42|43|44|45|46|50|51|52|53|54|61|62|63|64|65)\d{4}");
+                java.util.regex.Matcher matcher = pattern.matcher(rawResponse);
+                while (matcher.find()) {
+                    codes.add(matcher.group());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to extract region codes");
+        }
+        return codes;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Integer extractRegionLevel(Map<String, Object> parseResult) {
+        try {
+            Object regionObj = parseResult.get("region");
+            if (regionObj instanceof Map) {
+                Map<String, Object> region = (Map<String, Object>) regionObj;
+                Object levelObj = region.get("level");
+                if (levelObj != null) {
+                    return Integer.valueOf(levelObj.toString());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to extract region level");
+        }
+        return null;
+    }
+
+    private String extractDimensionConditions(Map<String, Object> parseResult) {
+        try {
+            Object dimensionsObj = parseResult.get("dimensions");
+            if (dimensionsObj != null) {
+                return dimensionsObj.toString();
+            }
+        } catch (Exception e) {
+            log.warn("Failed to extract dimension conditions");
+        }
+        return "{}";
     }
 
     // ==================== 内部方法 ====================
@@ -331,8 +521,14 @@ public class DataQueryTool {
         }
     }
 
-    private Map<String, Object> llmParseDimensionsInternal(String query, String indicatorJson, String dimensionsJson) {
-        String prompt = buildParsePrompt(query, indicatorJson, dimensionsJson);
+    private Map<String, Object> llmParseDimensionsWithMaxTime(
+            String query, 
+            String indicatorsJson, 
+            String dimensionsJson,
+            String maxLatestDate,
+            String frequency) {
+        
+        String prompt = buildParsePromptWithMaxTime(query, indicatorsJson, dimensionsJson, maxLatestDate, frequency);
         
         try {
             AssistantMessage response = chatModel.call(new Prompt(prompt)).getResult().getOutput();
@@ -395,16 +591,12 @@ public class DataQueryTool {
         return translated;
     }
 
-    // 修改：支持多地区（regionCodes 列表）和维度条件
     private String generateSql(DataTableConfig table, List<String> indicatorIds,
                                 String timeStart, String timeEnd, List<String> regionCodes, 
                                 Integer regionLevel, String dimensionConditions) {
         StringBuilder sql = new StringBuilder();
         
-        // 解析维度条件JSON
         Map<String, List<String>> dimConditions = parseDimensionConditions(dimensionConditions);
-        
-        // 获取维度配置，用于确定维度字段
         List<Map<String, Object>> dimensionConfigs = getDimensionConfigsInternal(table.getTableId(), true);
         
         sql.append("SELECT ");
@@ -415,7 +607,6 @@ public class DataQueryTool {
             sql.append(table.getIndicatorColumn()).append(", ");
         }
         
-        // 添加维度字段到SELECT
         for (Map<String, Object> dimConfig : dimensionConfigs) {
             String columnName = (String) dimConfig.get("columnName");
             if (columnName != null && !columnName.isEmpty()) {
@@ -433,7 +624,6 @@ public class DataQueryTool {
         
         List<String> conditions = new ArrayList<>();
         
-        // 多指标支持
         if (indicatorIds != null && !indicatorIds.isEmpty()) {
             if (indicatorIds.size() == 1) {
                 conditions.add(table.getIndicatorColumn() + " = '" + indicatorIds.get(0) + "'");
@@ -443,19 +633,15 @@ public class DataQueryTool {
             }
         }
         
-        // 时间范围
         if (timeStart != null && timeEnd != null) {
             conditions.add(table.getTimeColumn() + " BETWEEN '" + timeStart + "' AND '" + timeEnd + "'");
         }
         
-        // 地区级别
         if (regionLevel != null && regionLevel > 1) {
             conditions.add(table.getRegionLevelColumn() + " = " + regionLevel);
         }
         
-        // 多地区支持
         if (regionCodes != null && !regionCodes.isEmpty()) {
-            // 过滤掉 "0"（全国）
             List<String> validCodes = regionCodes.stream()
                     .filter(code -> !"0".equals(code) && !code.isEmpty())
                     .collect(Collectors.toList());
@@ -468,13 +654,11 @@ public class DataQueryTool {
             }
         }
         
-        // 添加维度条件到WHERE
         for (Map.Entry<String, List<String>> entry : dimConditions.entrySet()) {
             String columnName = entry.getKey();
             List<String> values = entry.getValue();
             
             if (values != null && !values.isEmpty()) {
-                // 查找对应的维度配置，获取默认值
                 String defaultValue = null;
                 for (Map<String, Object> dimConfig : dimensionConfigs) {
                     if (columnName.equals(dimConfig.get("columnName"))) {
@@ -483,15 +667,12 @@ public class DataQueryTool {
                     }
                 }
                 
-                // 构建维度条件
                 if (values.size() == 1) {
                     String value = values.get(0);
-                    // 如果值不等于默认值，添加条件
                     if (defaultValue == null || !defaultValue.equals(value)) {
                         conditions.add(columnName + " = '" + value + "'");
                     }
                 } else {
-                    // 多值时使用IN，排除默认值
                     List<String> validValues = values.stream()
                             .filter(v -> defaultValue == null || !defaultValue.equals(v))
                             .collect(Collectors.toList());
@@ -516,12 +697,6 @@ public class DataQueryTool {
         return sql.toString();
     }
 
-    // ==================== 辅助方法 ====================
-
-    /**
-     * 解析维度条件JSON字符串
-     * 格式: {"edu_level":["3","4"],"exp_level":["2"]}
-     */
     private Map<String, List<String>> parseDimensionConditions(String dimensionConditions) {
         Map<String, List<String>> result = new HashMap<>();
         
@@ -530,13 +705,10 @@ public class DataQueryTool {
         }
         
         try {
-            // 简单JSON解析（实际项目可使用Jackson或Gson）
-            // 去除首尾大括号
             String json = dimensionConditions.trim();
             if (json.startsWith("{")) json = json.substring(1);
             if (json.endsWith("}")) json = json.substring(0, json.length() - 1);
             
-            // 按逗号分割键值对
             String[] pairs = json.split(",");
             for (String pair : pairs) {
                 String[] kv = pair.split(":");
@@ -544,7 +716,6 @@ public class DataQueryTool {
                     String key = kv[0].trim().replace("\"", "").replace("'", "");
                     String valueStr = kv[1].trim();
                     
-                    // 解析值数组
                     List<String> values = new ArrayList<>();
                     if (valueStr.startsWith("[") && valueStr.endsWith("]")) {
                         valueStr = valueStr.substring(1, valueStr.length() - 1);
@@ -565,6 +736,8 @@ public class DataQueryTool {
         
         return result;
     }
+
+    // ==================== 辅助方法 ====================
 
     private boolean isRegionWord(String word) {
         Set<String> regions = Set.of("北京", "上海", "广州", "深圳", "杭州", "全国", "各省", "各地", "城市", "地区");
@@ -717,33 +890,67 @@ public class DataQueryTool {
         return Map.of("indicators", List.of(first), "isMultiMetric", false, "reasoning", "使用向量匹配最高分");
     }
 
-    private String buildParsePrompt(String query, String indicatorJson, String dimensionsJson) {
+    private String buildParsePromptWithMaxTime(
+            String query, 
+            String indicatorsJson, 
+            String dimensionsJson,
+            String maxLatestDate,
+            String frequency) {
+        
         return """
                 作为数据查询分析助手，从用户查询中提取维度条件。
                 
                 ## 用户查询
                 %s
                 
-                ## 指标信息
+                ## 匹配到的指标列表
                 %s
                 
-                ## 维度值列表（不含时间和地区）
+                ## 所有维度集合（去重后）
                 %s
                 
-                ## 任务
-                1. 地区解析：自然语言→编码和级别，支持多地区
-                   - 北京和上海 → codes:["110000","310000"], level:2
-                   - 北京 → codes:["110000"], level:2
-                   - 各省 → level:2（不指定codes）
-                   - 全国 → level:1, code:"100000"
-                2. 时间计算：基于频率和最新时间ID计算范围，输出格式为 yyyy-MM-dd（频率最后一天）
-                   - 频率M+近6个月 → start: "2024-01-31", end: "2024-06-30"
-                   - 频率Q+近4个季度 → start: "2023-06-30", end: "2024-03-31"
-                   - 频率Y+近3年 → start: "2021-12-31", end: "2023-12-31"
-                3. 维度匹配：从提供的列表中匹配，支持多值
-                4. 分析类型：SINGLE/TREND/RANKING/COMPARISON/CROSS_SECTION
+                ## 时间基准信息（重要）
+                - 最大最新时间：%s
+                - 频率：%s (D=日度, M=月度, Q=季度, Y=年度)
                 
-                输出JSON格式: {region: {codes:[], level, name}, timeRange: {start:"yyyy-MM-dd", end:"yyyy-MM-dd"}, dimensions, analysisType, reasoning}
-                """.formatted(query, indicatorJson, dimensionsJson);
+                ## 时间计算规则（基于最大最新时间推算）
+                - "近3个月" → 开始时间 = 最大时间往前推3个月的最后一天，结束时间 = 最大时间
+                  例如：最大时间="2024-06-30"，频率=M → start="2024-03-31", end="2024-06-30"
+                - "近6个月" → 开始时间 = 最大时间往前推6个月的最后一天
+                - "近1年" → 开始时间 = 最大时间往前推1年的最后一天
+                - "今年" → 开始时间 = 当年1月1日，结束时间 = 最大时间
+                - "去年" → 开始时间 = 去年1月1日，结束时间 = 去年12月31日
+                - 默认（未指定时间）→ 近6个月
+                
+                ## 地区解析规则
+                - 北京和上海 → codes:["110000","310000"], level:2
+                - 北京 → codes:["110000"], level:2
+                - 上海和深圳 → codes:["310000","440300"], level:2
+                - 各省/各省份 → level:2（不指定codes，查询所有省级）
+                - 全国 → level:1, code:"100000"
+                
+                ## 维度匹配规则
+                - 从提供的维度集合中匹配
+                - 支持多值，如 "本科和硕士" → edu_level:["3","4"]
+                - 交叉分析：如 "不同学历对比" → 包含所有非默认学历值
+                
+                ## 输出JSON格式
+                {
+                  "region": {
+                    "codes": ["110000", "310000"],
+                    "level": 2,
+                    "name": "北京和上海"
+                  },
+                  "timeRange": {
+                    "start": "2024-03-31",
+                    "end": "2024-06-30"
+                  },
+                  "dimensions": {
+                    "edu_level": ["3"]
+                  },
+                  "analysisType": "TREND",
+                  "reasoning": "解析说明"
+                }
+                """.formatted(query, indicatorsJson, dimensionsJson, maxLatestDate, frequency);
     }
 }
