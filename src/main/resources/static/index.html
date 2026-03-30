@@ -15,10 +15,28 @@
         }
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-        .flow-step { animation: slideIn 0.2s ease; }
+        .flow-step { 
+            animation: slideIn 0.2s ease;
+            padding: 4px 8px;
+            border-radius: 4px;
+            background: rgba(0,0,0,0.2);
+        }
         @keyframes slideIn {
             from { opacity: 0; transform: translateX(-10px); }
             to { opacity: 1; transform: translateX(0); }
+        }
+        .cursor {
+            display: inline-block;
+            width: 2px;
+            height: 1em;
+            background: #60a5fa;
+            animation: blink 1s infinite;
+            vertical-align: text-bottom;
+            margin-left: 2px;
+        }
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
         }
     </style>
 </head>
@@ -37,6 +55,28 @@
                     <h1 class="text-white font-semibold text-lg">低空经济智能体</h1>
                     <p class="text-blue-200 text-xs">基于 Spring AI Alibaba</p>
                 </div>
+                <div class="ml-auto flex items-center gap-2">
+                    <span id="statusDot" class="w-2 h-2 bg-green-400 rounded-full"></span>
+                    <span id="statusText" class="text-green-300 text-xs">就绪</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="px-6 py-3 bg-white/5 border-b border-white/10">
+            <div class="flex gap-2 overflow-x-auto scrollbar-hide">
+                <button onclick="setInput('你好，能做什么？')" class="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white/80 text-xs rounded-full transition whitespace-nowrap">
+                    👋 你好
+                </button>
+                <button onclick="setInput('北京招聘薪资是多少？')" class="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white/80 text-xs rounded-full transition whitespace-nowrap">
+                    💰 招聘薪资
+                </button>
+                <button onclick="setInput('各省份企业数量排名')" class="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white/80 text-xs rounded-full transition whitespace-nowrap">
+                    🏢 企业排名
+                </button>
+                <button onclick="setInput('深圳近3个月岗位趋势')" class="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white/80 text-xs rounded-full transition whitespace-nowrap">
+                    📈 趋势分析
+                </button>
             </div>
         </div>
 
@@ -49,7 +89,15 @@
                     </svg>
                 </div>
                 <div class="bg-white/10 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[80%]">
-                    <p class="text-white/90 text-sm">你好！我是低空经济智能体 🤖</p>
+                    <p class="text-white/90 text-sm leading-relaxed">
+                        你好！我是低空经济智能体 🤖<br><br>
+                        我可以帮你查询：<br>
+                        • 💰 招聘薪资数据<br>
+                        • 🏢 企业数量统计<br>
+                        • 📊 行业趋势分析<br>
+                        • 📍 地区对比排名<br><br>
+                        试试问我：<span class="text-blue-300">"北京本科招聘薪资"</span> 或 <span class="text-blue-300">"各省份企业数量排名"</span>
+                    </p>
                 </div>
             </div>
         </div>
@@ -72,10 +120,29 @@
         const messagesEl = document.getElementById('messages');
         const inputEl = document.getElementById('input');
         const sendBtn = document.getElementById('sendBtn');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
 
         let currentMsgEl = null;
         let currentFlowEl = null;
         let currentContentEl = null;
+        let fullContent = '';
+
+        function setInput(text) {
+            inputEl.value = text;
+            inputEl.focus();
+        }
+
+        function setStatus(status, text) {
+            statusText.textContent = text;
+            if (status === 'loading') {
+                statusDot.className = 'w-2 h-2 bg-yellow-400 rounded-full animate-pulse';
+            } else if (status === 'error') {
+                statusDot.className = 'w-2 h-2 bg-red-400 rounded-full';
+            } else {
+                statusDot.className = 'w-2 h-2 bg-green-400 rounded-full';
+            }
+        }
 
         function escapeHtml(text) {
             const div = document.createElement('div');
@@ -105,10 +172,10 @@
                     </svg>
                 </div>
                 <div class="bg-white/10 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[85%] flex-1">
-                    <div class="flow-container space-y-1 mb-2"></div>
+                    <div class="flow-container space-y-1 mb-3"></div>
                     <div class="content-area">
                         <p class="text-white/90 text-sm leading-relaxed"></p>
-                        <span class="inline-block w-2 h-4 bg-blue-400 animate-pulse ml-0.5 align-middle"></span>
+                        <span class="cursor"></span>
                     </div>
                 </div>
             `;
@@ -117,34 +184,36 @@
             currentMsgEl = div;
             currentFlowEl = div.querySelector('.flow-container');
             currentContentEl = div.querySelector('.content-area p');
+            fullContent = '';
         }
 
-        function addFlowStep(icon, text, color) {
+        function addFlowStep(icon, text, colorClass) {
             if (!currentFlowEl) return;
             const div = document.createElement('div');
-            div.className = 'flow-step text-xs';
-            div.innerHTML = `<span class="${color}">${icon} ${escapeHtml(text)}</span>`;
+            div.className = 'flow-step text-xs flex items-center gap-2';
+            div.innerHTML = `<span class="${colorClass}">${icon} ${escapeHtml(text)}</span>`;
             currentFlowEl.appendChild(div);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
 
         function appendContent(text) {
             if (!currentContentEl) return;
-            const raw = (currentContentEl.getAttribute('data-raw') || '') + text;
-            currentContentEl.setAttribute('data-raw', raw);
-            currentContentEl.innerHTML = escapeHtml(raw).replace(/\n/g, '<br>');
+            fullContent += text;
+            currentContentEl.innerHTML = escapeHtml(fullContent).replace(/\n/g, '<br>');
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
 
         function finishStream() {
             if (currentMsgEl) {
-                const cursor = currentMsgEl.querySelector('.content-area span.animate-pulse');
+                const cursor = currentMsgEl.querySelector('.content-area .cursor');
                 if (cursor) cursor.remove();
             }
             currentMsgEl = null;
             currentFlowEl = null;
             currentContentEl = null;
+            fullContent = '';
             sendBtn.disabled = false;
+            setStatus('ready', '就绪');
         }
 
         async function sendMessage() {
@@ -154,6 +223,7 @@
             addUserMessage(message);
             inputEl.value = '';
             sendBtn.disabled = true;
+            setStatus('loading', '处理中...');
 
             try {
                 const response = await fetch('/api/chat/stream', {
@@ -193,13 +263,26 @@
                                 case 'thinking':
                                     addFlowStep('🤔', currentData, 'text-yellow-300');
                                     break;
+                                case 'thinking_detail':
+                                    addFlowStep('💭', currentData, 'text-gray-400');
+                                    break;
                                 case 'agent':
-                                    const [agent, purpose] = currentData.split('|');
-                                    addFlowStep('🤖', `调用 ${agent}: ${purpose}`, 'text-purple-300');
+                                    const [agentName, purpose] = currentData.split('|');
+                                    addFlowStep('🤖', `调用 ${agentName}: ${purpose || '处理中'}`, 'text-purple-300');
+                                    break;
+                                case 'step':
+                                    addFlowStep('⚡', currentData, 'text-blue-300');
+                                    break;
+                                case 'tool_call':
+                                    const [toolName, args] = currentData.split('|');
+                                    addFlowStep('🔧', `调用 ${toolName}`, 'text-orange-300');
+                                    break;
+                                case 'tool_result':
+                                    const [tName, result] = currentData.split('|');
+                                    addFlowStep('✅', `${tName} 完成`, 'text-green-300');
                                     break;
                                 case 'tool':
-                                    const [tool, result] = currentData.split('|');
-                                    addFlowStep('🔧', `${tool} - ${result}`, 'text-orange-300');
+                                    addFlowStep('🔧', currentData, 'text-orange-300');
                                     break;
                                 case 'content':
                                     appendContent(currentData);
@@ -218,8 +301,10 @@
                 }
                 finishStream();
             } catch (err) {
+                console.error('Error:', err);
+                if (!currentMsgEl) createBotContainer();
                 addFlowStep('❌', '网络错误: ' + err.message, 'text-red-300');
-                sendBtn.disabled = false;
+                finishStream();
             }
         }
 

@@ -1,13 +1,18 @@
 package com.lowaltitude.agent.controller;
 
+import com.alibaba.cloud.ai.graph.NodeOutput;
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.alibaba.cloud.ai.graph.streaming.OutputType;
+import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.publisher.Flux;
 
 import java.io.IOException;
 import java.util.Map;
@@ -15,8 +20,8 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * 聊天控制器
- * 提供 REST API 接口供前端调用
+ * 聊天控制器 - 支持流式输出
+ * 正确处理 Spring AI Alibaba 的 StreamingOutput 类型
  */
 @Slf4j
 @RestController
@@ -51,94 +56,118 @@ public class ChatController {
     }
 
     /**
-     * 流式聊天接口（SSE）- 使用 SseEmitter
+     * 流式聊天接口（SSE）
+     * 正确处理 StreamingOutput 类型和 OutputType
      */
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter chatStream(@RequestBody ChatRequest request) {
+    public Flux<String> chatStream(@RequestBody ChatRequest request) {
         log.info("Received stream chat request: {}", request.getMessage());
         
-        SseEmitter emitter = new SseEmitter(300000L);
-        
-        CompletableFuture.runAsync(() -> {
-            try {
-                // 发送开始事件
-                sendEvent(emitter, "thinking", "正在分析您的请求...");
-                
-                supervisorAgent.stream(request.getMessage())
-                    .subscribe(
-                        output -> {
-                            processStreamOutput(output, emitter);
-                        },
-                        error -> {
-                            log.error("Stream error", error);
-                            sendEvent(emitter, "error", error.getMessage());
-                            sendEvent(emitter, "done", "");
-                            emitter.complete();
-                        },
-                        () -> {
-                            sendEvent(emitter, "done", "");
-                            emitter.complete();
-                        }
-                    );
-            } catch (Exception e) {
-                log.error("Stream setup error", e);
-                sendEvent(emitter, "error", e.getMessage());
-                sendEvent(emitter, "done", "");
-                emitter.complete();
-            }
+        return Flux.create(sink -> {
+            CompletableFuture.runAsync(() -> {
+                try {
+                    // 发送开始事件
+                    sink.next(formatSseEvent("thinking", "正在分析您的请求..."));
+                    
+                    supervisorAgent.stream(request.getMessage())
+                        .subscribe(
+                            output -> processOutput(output, sink),
+                            error -> {
+                                log.error("Stream error", error);
+                                sink.next(formatSseEvent("error", error.getMessage()));
+                                sink.next(formatSseEvent("done", ""));
+                                sink.complete();
+                            },
+                            () -> {
+                                sink.next(formatSseEvent("done", ""));
+                                sink.complete();
+                            }
+                        );
+                } catch (Exception e) {
+                    log.error("Stream setup error", e);
+                    sink.next(formatSseEvent("error", e.getMessage()));
+                    sink.next(formatSseEvent("done", ""));
+                    sink.complete();
+                }
+            });
         });
-        
-        return emitter;
     }
     
-    private void sendEvent(SseEmitter emitter, String eventName, String data) {
-        try {
-            emitter.send(SseEmitter.event()
-                .name(eventName)
-                .data(data));
-        } catch (IOException e) {
-            log.error("Failed to send SSE event", e);
+    /**
+     * 处理流式输出 - 根据 OutputType 区分不同类型
+     */
+    private void processOutput(NodeOutput output, reactor.core.publisher.FluxSink<String> sink) {
+        // 检查是否为 StreamingOutput 类型
+        if (output instanceof StreamingOutput streamingOutput) {
+            OutputType type = streamingOutput.getOutputType();
+            
+            // 处理模型推理的流式增量内容
+            if (type == OutputType.AGENT_MODEL_STREAMING) {
+                if (streamingOutput.message() instanceof AssistantMessage msg) {
+                    String text = msg.getText();
+                    if (text != null && !text.isEmpty()) {
+                        sink.next(formatSseEvent("content", text));
+                    }
+                    
+                    // 检查是否有 reasoningContent (Thinking 内容)
+                    Object reasoning = msg.getMetadata().get("reasoningContent");
+                    if (reasoning != null && !reasoning.toString().isEmpty()) {
+                        sink.next(formatSseEvent("thinking_detail", reasoning.toString()));
+                    }
+                }
+            }
+            // 模型推理完成
+            else if (type == OutputType.AGENT_MODEL_FINISHED) {
+                if (streamingOutput.message() instanceof AssistantMessage msg) {
+                    // 检查是否有工具调用
+                    if (msg.hasToolCalls()) {
+                        msg.getToolCalls().forEach(toolCall -> {
+                            sink.next(formatSseEvent("tool_call", 
+                                toolCall.name() + "|" + toolCall.arguments()));
+                        });
+                    }
+                }
+            }
+            // 工具调用完成
+            else if (type == OutputType.AGENT_TOOL_FINISHED) {
+                if (streamingOutput.message() instanceof ToolResponseMessage toolResponse) {
+                    toolResponse.getResponses().forEach(response -> {
+                        sink.next(formatSseEvent("tool_result", 
+                            response.name() + "|" + response.responseData()));
+                    });
+                }
+                sink.next(formatSseEvent("tool", "工具执行完成"));
+            }
+            // Hook 执行完成
+            else if (type == OutputType.AGENT_HOOK_FINISHED) {
+                log.debug("Hook finished: {}", output.node());
+            }
+        }
+        // 普通节点输出 - 检测 Agent 调用
+        else {
+            String nodeName = output.node();
+            if (nodeName != null && !nodeName.isEmpty()) {
+                // 检测 Agent 名称
+                if (nodeName.contains("chat_agent")) {
+                    sink.next(formatSseEvent("agent", "chat_agent|处理闲聊问候"));
+                } else if (nodeName.contains("data_query_agent")) {
+                    sink.next(formatSseEvent("agent", "data_query_agent|执行数据查询"));
+                } else if (nodeName.contains("article_agent")) {
+                    sink.next(formatSseEvent("agent", "article_agent|检索文章资讯"));
+                } else if (nodeName.contains("policy_agent")) {
+                    sink.next(formatSseEvent("agent", "policy_agent|查询政策法规"));
+                } else if (!nodeName.equals("__END__") && !nodeName.equals("supervisor")) {
+                    sink.next(formatSseEvent("step", nodeName));
+                }
+            }
         }
     }
     
-    private void processStreamOutput(Object output, SseEmitter emitter) {
-        if (output == null) return;
-        
-        // 处理 AssistantMessage - 这是主要的 AI 回复内容
-        if (output instanceof AssistantMessage msg) {
-            String text = msg.getText();
-            if (text != null && !text.isEmpty()) {
-                sendEvent(emitter, "content", text);
-            }
-            return;
-        }
-        
-        // 处理 ToolMessage (工具调用)
-        String className = output.getClass().getSimpleName();
-        if (className.contains("ToolMessage") || className.contains("ToolResponse")) {
-            try {
-                String toolName = (String) output.getClass().getMethod("getToolName").invoke(output);
-                sendEvent(emitter, "tool", toolName + "|执行完成");
-            } catch (Exception e) {
-                log.debug("Not a tool message");
-            }
-            return;
-        }
-        
-        // 检测 Agent 调用
-        String str = output.toString();
-        if (str.contains("chat_agent")) {
-            sendEvent(emitter, "agent", "chat_agent|处理闲聊问候");
-        } else if (str.contains("data_query_agent")) {
-            sendEvent(emitter, "agent", "data_query_agent|执行数据查询");
-        } else if (str.contains("policy_agent")) {
-            sendEvent(emitter, "agent", "policy_agent|查询政策法规");
-        }
-        
-        // 尝试提取其他有意义的文本内容
-        if (!str.startsWith("{") && str.length() > 5 && !str.contains("OverAllState")) {
-            sendEvent(emitter, "content", str);
-        }
+    /**
+     * 格式化 SSE 事件
+     */
+    private String formatSseEvent(String event, String data) {
+        return "event: " + event + "\ndata: " + data + "\n\n";
     }
 
     /**
