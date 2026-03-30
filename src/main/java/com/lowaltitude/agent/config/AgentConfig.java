@@ -1,17 +1,10 @@
 package com.lowaltitude.agent.config;
 
-import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
-import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
-import com.alibaba.cloud.ai.graph.agent.AgentTool;
-import com.alibaba.cloud.ai.graph.agent.ReactAgent;
-import com.alibaba.cloud.ai.graph.agent.hook.skills.SkillsAgentHook;
-import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
-import com.alibaba.cloud.ai.graph.skills.registry.classpath.ClasspathSkillRegistry;
-import com.alibaba.cloud.ai.graph.skills.registry.SkillRegistry;
-import com.lowaltitude.agent.config.datasource.DynamicDataSourceManager;
-import com.lowaltitude.agent.tool.DataQueryTool;
-import com.lowaltitude.agent.tool.ResultFormatTool;
+import java.util.Arrays;
+import java.util.List;
+
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,8 +12,19 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 
-import java.util.Arrays;
-import java.util.List;
+import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
+import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
+import com.alibaba.cloud.ai.graph.agent.AgentTool;
+import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.alibaba.cloud.ai.graph.agent.hook.skills.SkillsAgentHook;
+import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
+import com.alibaba.cloud.ai.graph.skills.registry.SkillRegistry;
+import com.alibaba.cloud.ai.graph.skills.registry.classpath.ClasspathSkillRegistry;
+import com.lowaltitude.agent.config.datasource.DynamicDataSourceManager;
+import com.lowaltitude.agent.config.interceptor.ToolMonitoringInterceptor;
+import com.lowaltitude.agent.tool.DataQueryTool;
+import com.lowaltitude.agent.tool.PolicySearchTools;
+import com.lowaltitude.agent.tool.ResultFormatTool;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -39,7 +43,6 @@ public class AgentConfig {
      * 创建 ChatModel
      */
     @Bean
-    @Primary
     public ChatModel chatModel() {
         DashScopeApi dashScopeApi = DashScopeApi.builder()
                 .apiKey(dashScopeApiKey)
@@ -83,7 +86,7 @@ public class AgentConfig {
      * 闲聊 Agent - 处理问候、简单问答
      */
     @Bean
-    public ReactAgent chatAgent(ChatModel chatModel) {
+    public ReactAgent chatAgent(OllamaChatModel chatModel) {
         return ReactAgent.builder()
                 .name("chat_agent")
                 .model(chatModel)
@@ -110,7 +113,7 @@ public class AgentConfig {
      */
     @Bean
     public ReactAgent dataQueryAgent(
-            ChatModel chatModel,
+    		OllamaChatModel chatModel,
             SkillsAgentHook skillsAgentHook,
             DataQueryTool dataQueryTool,
             ResultFormatTool resultFormatTool) {
@@ -163,8 +166,8 @@ public class AgentConfig {
                            - SQL1: SELECT ... FROM recruitment WHERE region_id IN ('110000','310000')
                            - SQL2: SELECT ... FROM enterprise WHERE region_id IN ('110000','310000')
                         5. executeMultiQuery 并行执行两个查询，传入：
-                           [{"sourceId":"ds_recruitment","sql":"SQL1..."},
-                            {"sourceId":"ds_enterprise","sql":"SQL2..."}]
+                           [\\{"sourceId":"ds_recruitment","sql":"SQL1..."\\},
+                            \\{"sourceId":"ds_enterprise","sql":"SQL2..."\\}]
                         6. 获取合并后的结果，按时间排序
                         - 自动翻译编码、返回格式化数据
                         
@@ -185,6 +188,8 @@ public class AgentConfig {
                 .tools(toolCallbacks)
                 .tools(toolCallbacks1)
                 .hooks(List.of(skillsAgentHook))
+                .interceptors(new ToolMonitoringInterceptor())
+//                .enableLogging(true)
                 .saver(new MemorySaver())
                 .build();
     }
@@ -193,7 +198,7 @@ public class AgentConfig {
      * 文章检索 Agent - 预留（功能开发中）
      */
     @Bean
-    public ReactAgent articleAgent(ChatModel chatModel) {
+    public ReactAgent articleAgent(OllamaChatModel chatModel) {
         return ReactAgent.builder()
                 .name("article_agent")
                 .model(chatModel)
@@ -214,20 +219,22 @@ public class AgentConfig {
      * 政策分析 Agent - 预留（功能开发中）
      */
     @Bean
-    public ReactAgent policyAgent(ChatModel chatModel) {
+    public ReactAgent policyAgent(OllamaChatModel chatModel,PolicySearchTools policySearchTools) {
+    	List<ToolCallback> toolCallbacks = Arrays.asList(ToolCallbacks.from(policySearchTools));
         return ReactAgent.builder()
                 .name("policy_agent")
                 .model(chatModel)
-                .description("[预留] 政策分析功能")
+                .description("专业处理低空经济相关政策的查询")
                 .instruction("""
                         政策分析功能正在开发中。
+                        你是低空经济政策查询专家。使用 Tools 完成查询政策查询任务。
                         
-                        请回复用户：
-                        "政策分析功能即将上线，敬请期待！目前您可以：
-                        1. 查询低空经济数据（招聘、企业、专利等）
-                        2. 了解行业趋势和排名"
+                        ## 核心能力
+                        你可以查询低空经济相关的各类政策内容数据，
                         """)
                 .saver(new MemorySaver())
+                .tools(toolCallbacks)
+                .interceptors(new ToolMonitoringInterceptor())
                 .build();
     }
 
@@ -238,7 +245,7 @@ public class AgentConfig {
     @Bean
     @Primary
     public ReactAgent supervisorAgent(
-            ChatModel chatModel,
+    		OllamaChatModel chatModel,
             ReactAgent chatAgent,
             ReactAgent dataQueryAgent,
             ReactAgent articleAgent,
@@ -267,7 +274,7 @@ public class AgentConfig {
                   * 地区相关：北京、上海、深圳、各省、各城市
                   * 时间相关：近6个月、2024年、趋势、走势
                   * 分析类型：排名、对比、分布、占比
-                - **处理方式**: 调用 data_query_agent，然后 FINISH
+                - **处理方式**: 调用 data_query_agent，然后直接返回智能体结果
                 
                 ### article_agent
                 - **功能**: 文章检索（开发中）
@@ -275,9 +282,9 @@ public class AgentConfig {
                 - **处理方式**: 直接回复"文章检索功能开发中"
                 
                 ### policy_agent
-                - **功能**: 政策分析（开发中）
+                - **功能**: 政策查询分析
                 - **适用场景**: 用户要求查询政策、法规、文件
-                - **处理方式**: 直接回复"政策分析功能开发中"
+                - **处理方式**: 调用 policy_agent，然后直接返回智能体结果
                 
                 ## 决策规则（优先级从高到低）
                 
@@ -292,7 +299,7 @@ public class AgentConfig {
                 3. **文章资讯** → 回复开发中
                    关键词：文章、新闻、资讯、报道
                 
-                4. **政策法规** → 回复开发中
+                4. **政策法规** → policy_agent
                    关键词：政策、法规、文件、规定
                 
                 5. **模糊/无法判断** → chat_agent 进行澄清

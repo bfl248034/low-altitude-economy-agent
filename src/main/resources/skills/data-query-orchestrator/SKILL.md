@@ -120,7 +120,7 @@ description: |
   "frequency": "M",
   "timeRange": {"start": "2024-04-30", "end": "2024-06-30"},
   "regionCodes": ["110000", "310000"],
-  "regionLevel": 2,
+  "regionLevel": 1,
   "dimensionConditions": {"edu_level": ["3"]},
   "sqlTasks": [
     {

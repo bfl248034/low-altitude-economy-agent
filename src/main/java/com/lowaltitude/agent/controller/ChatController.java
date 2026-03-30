@@ -38,6 +38,7 @@ public class ChatController {
             
             if (result.isPresent()) {
                 OverAllState state = result.get();
+                System.out.println(state.toString());
                 String responseText = extractResponseFromState(state);
                 return ChatResponse.success(responseText);
             } else {

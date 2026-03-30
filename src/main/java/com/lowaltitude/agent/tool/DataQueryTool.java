@@ -1,9 +1,33 @@
 package com.lowaltitude.agent.tool;
 
-import com.lowaltitude.agent.entity.DataDimensionConfig;
+
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.TemporalAdjusters;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.stereotype.Component;
+
 import com.lowaltitude.agent.entity.DataSourceConfig;
 import com.lowaltitude.agent.entity.DataTableConfig;
-import com.lowaltitude.agent.entity.DimensionValue;
 import com.lowaltitude.agent.entity.Indicator;
 import com.lowaltitude.agent.entity.LatestTimeConfig;
 import com.lowaltitude.agent.service.DynamicQueryService;
@@ -12,22 +36,10 @@ import com.lowaltitude.agent.service.MetadataService.DimensionConfigWithValues;
 import com.lowaltitude.agent.service.retrieval.InMemoryVectorSearchService;
 import com.lowaltitude.agent.service.retrieval.InMemoryVectorSearchService.IndicatorVector;
 import com.lowaltitude.agent.service.retrieval.SynonymService;
+
+import cn.hutool.json.JSONUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
-import org.springframework.stereotype.Component;
-
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-import java.time.temporal.TemporalAdjusters;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
  * 数据查询工具 - 3个粗粒度工具
@@ -175,7 +187,7 @@ public class DataQueryTool {
                 maxLatestDate.format(DATE_FORMATTER),
                 maxFrequency
             );
-            
+            log.info("LLM 维度信息 {}",parseResult.toString());
             // 4. 解析LLM返回的时间范围
             TimeRange timeRange = extractTimeRange(parseResult, maxLatestDate, maxFrequency);
             
@@ -214,7 +226,8 @@ public class DataQueryTool {
                     regionLevel,
                     dimensionConditions
                 );
-                
+                log.info("生成 sourceId {}",table.getSourceId());
+                log.info("生成 sql {}",sql);
                 sqlTasks.add(Map.of(
                     "tableId", tableId,
                     "sourceId", table.getSourceId(),
@@ -222,21 +235,23 @@ public class DataQueryTool {
                     "sql", sql
                 ));
             }
-            
-            return Map.of(
-                "success", true,
-                "indicators", indicators,
-                "indicatorIds", indicatorIds,
-                "allDimensions", allDimensions,
-                "maxLatestDate", maxLatestDate.format(DATE_FORMATTER),
-                "frequency", maxFrequency,
-                "parsedDimensions", parseResult,
-                "timeRange", Map.of("start", timeRange.start.format(DATE_FORMATTER), "end", timeRange.end.format(DATE_FORMATTER)),
-                "regionCodes", regionCodes,
-                "regionLevel", regionLevel,
-                "dimensionConditions", dimensionConditions,
-                "sqlTasks", sqlTasks
-            );
+            Map<String,String> timeMap = Map.of("start", timeRange.start.format(DATE_FORMATTER), "end", timeRange.end.format(DATE_FORMATTER));
+            Map<String,Object> resultMap = new HashMap<String, Object>();
+     
+            resultMap.put("success", true);
+    		resultMap.put("indicators", indicators);
+			resultMap.put("indicatorIds", indicatorIds);
+            resultMap.put("allDimensions", allDimensions);
+            resultMap.put("maxLatestDate", maxLatestDate.format(DATE_FORMATTER));
+            resultMap.put("frequency", maxFrequency);
+            resultMap.put( "parsedDimensions", parseResult);
+            resultMap.put("timeRange", timeMap);
+                
+            resultMap.put( "regionCodes", regionCodes);
+            resultMap.put( "regionLevel", regionLevel);
+        	resultMap.put( "dimensionConditions", dimensionConditions);
+        	resultMap.put( "sqlTasks", sqlTasks);
+            return resultMap;
             
         } catch (Exception e) {
             log.error("Parse and build SQL failed", e);
@@ -253,12 +268,14 @@ public class DataQueryTool {
         log.info("Executing {} parallel queries", queryTasks.size());
         
         try {
+        	
             List<Future<QueryResult>> futures = new ArrayList<>();
             
             for (Map<String, String> task : queryTasks) {
                 String sourceId = task.get("sourceId");
                 String sql = task.get("sql");
-                
+                log.info("执行 sourceId {}",sourceId);
+                log.info("执行 sql {}",sql);
                 Future<QueryResult> future = queryExecutor.submit(() -> {
                     try {
                         DataSourceConfig config = metadataService.getDataSource(sourceId)
@@ -367,7 +384,7 @@ public class DataQueryTool {
             
             // 尝试匹配时间范围
             java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
-                "(\d{4}-\d{2}-\d{2}).*?(\d{4}-\d{2}-\d{2})");
+                "(\\d{4}-\\d{2}-\\d{2}).*?(\\d{4}-\\d{2}-\\d{2})");
             java.util.regex.Matcher matcher = pattern.matcher(rawResponse);
             if (matcher.find()) {
                 return new TimeRange(
@@ -424,7 +441,7 @@ public class DataQueryTool {
             if (codes.isEmpty()) {
                 String rawResponse = (String) parseResult.getOrDefault("rawResponse", "");
                 // 匹配地区编码格式
-                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("(11|12|13|14|15|21|22|23|31|32|33|34|35|36|37|41|42|43|44|45|46|50|51|52|53|54|61|62|63|64|65)\d{4}");
+                java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("(11|12|13|14|15|21|22|23|31|32|33|34|35|36|37|41|42|43|44|45|46|50|51|52|53|54|61|62|63|64|65)\\d{4}");
                 java.util.regex.Matcher matcher = pattern.matcher(rawResponse);
                 while (matcher.find()) {
                     codes.add(matcher.group());
@@ -533,7 +550,9 @@ public class DataQueryTool {
         try {
             AssistantMessage response = chatModel.call(new Prompt(prompt)).getResult().getOutput();
             String content = response.getText();
-            return Map.of("rawResponse", content, "status", "success");
+            String json = content.replace("```json", "").replace("```", "");
+            return JSONUtil.toBean(json, Map.class);
+//            return Map.of("rawResponse", content, "status", "success");
         } catch (Exception e) {
             log.error("LLM parse failed", e);
             return Map.of("error", e.getMessage(), "status", "failed");
@@ -596,17 +615,18 @@ public class DataQueryTool {
                                 Integer regionLevel, String dimensionConditions) {
         StringBuilder sql = new StringBuilder();
         
-        Map<String, List<String>> dimConditions = parseDimensionConditions(dimensionConditions);
+        Map<String, Object> dimConditions = parseDimensionConditions(dimensionConditions);
+        log.info("生成sql，维度信息 {} ",dimensionConditions);
         List<Map<String, Object>> dimensionConfigs = getDimensionConfigsInternal(table.getTableId(), true);
         
         sql.append("SELECT ");
         sql.append(table.getTimeColumn()).append(", ");
         sql.append(table.getRegionColumn()).append(", ");
         sql.append(table.getRegionLevelColumn()).append(", ");
-        if (table.getIndicatorColumn() != null) {
-            sql.append(table.getIndicatorColumn()).append(", ");
+        if (table.getIndicatorColumn() == null) {
+        	table.setIndicatorColumn("indicator_id");
         }
-        
+        sql.append(table.getIndicatorColumn()).append(", ");
         for (Map<String, Object> dimConfig : dimensionConfigs) {
             String columnName = (String) dimConfig.get("columnName");
             if (columnName != null && !columnName.isEmpty()) {
@@ -637,9 +657,6 @@ public class DataQueryTool {
             conditions.add(table.getTimeColumn() + " BETWEEN '" + timeStart + "' AND '" + timeEnd + "'");
         }
         
-        if (regionLevel != null && regionLevel > 1) {
-            conditions.add(table.getRegionLevelColumn() + " = " + regionLevel);
-        }
         
         if (regionCodes != null && !regionCodes.isEmpty()) {
             List<String> validCodes = regionCodes.stream()
@@ -652,37 +669,50 @@ public class DataQueryTool {
                 String inClause = validCodes.stream().map(code -> "'" + code + "'").collect(Collectors.joining(", "));
                 conditions.add(table.getRegionColumn() + " IN (" + inClause + ")");
             }
+        }else {
+        	if (regionLevel != null ) {
+                conditions.add(table.getRegionLevelColumn() + " = " + regionLevel);
+            }
         }
         
-        for (Map.Entry<String, List<String>> entry : dimConditions.entrySet()) {
+        for (Map.Entry<String, Object> entry : dimConditions.entrySet()) {
             String columnName = entry.getKey();
-            List<String> values = entry.getValue();
-            
+            Object obj = entry.getValue();
+            List<String> values = new ArrayList<String>();
+            if(obj instanceof String) {
+            	values.add(obj.toString());
+            }else if(obj instanceof List){
+            	values = (List<String>) obj;
+            }
             if (values != null && !values.isEmpty()) {
                 String defaultValue = null;
+                boolean flag = false;
                 for (Map<String, Object> dimConfig : dimensionConfigs) {
                     if (columnName.equals(dimConfig.get("columnName"))) {
                         defaultValue = (String) dimConfig.get("defaultValue");
+                        flag = true;
                         break;
                     }
                 }
-                
+                if(!flag) {
+                	continue;
+                }
                 if (values.size() == 1) {
                     String value = values.get(0);
                     if (defaultValue == null || !defaultValue.equals(value)) {
                         conditions.add(columnName + " = '" + value + "'");
                     }
                 } else {
-                    List<String> validValues = values.stream()
-                            .filter(v -> defaultValue == null || !defaultValue.equals(v))
-                            .collect(Collectors.toList());
+//                    List<String> validValues = values.stream()
+//                            .filter(v -> defaultValue == null || !defaultValue.equals(v))
+//                            .collect(Collectors.toList());
                     
-                    if (!validValues.isEmpty()) {
-                        String inClause = validValues.stream()
+//                    if (!validValues.isEmpty()) {
+                        String inClause = values.stream()
                                 .map(v -> "'" + v + "'")
                                 .collect(Collectors.joining(", "));
                         conditions.add(columnName + " IN (" + inClause + ")");
-                    }
+//                    }
                 }
             }
         }
@@ -693,18 +723,22 @@ public class DataQueryTool {
         }
         
         sql.append(" ORDER BY ").append(table.getTimeColumn()).append(" DESC");
-        
+        sql.append(" LIMIT 100 ");
         return sql.toString();
     }
 
-    private Map<String, List<String>> parseDimensionConditions(String dimensionConditions) {
+    private Map<String, Object> parseDimensionConditions(String dimensionConditions) {
         Map<String, List<String>> result = new HashMap<>();
         
         if (dimensionConditions == null || dimensionConditions.isEmpty() || dimensionConditions.equals("{}")) {
-            return result;
+            return null;
         }
-        
         try {
+	        Map<String,Object> map = JSONUtil.toBean(dimensionConditions, Map.class);
+	        return map;
+        } catch (Exception e) {
+            log.warn("Failed to parse dimension conditions: {}", dimensionConditions, e);
+        }
             String json = dimensionConditions.trim();
             if (json.startsWith("{")) json = json.substring(1);
             if (json.endsWith("}")) json = json.substring(0, json.length() - 1);
@@ -730,11 +764,9 @@ public class DataQueryTool {
                     result.put(key, values);
                 }
             }
-        } catch (Exception e) {
-            log.warn("Failed to parse dimension conditions: {}", dimensionConditions, e);
-        }
+       
         
-        return result;
+        return null;
     }
 
     // ==================== 辅助方法 ====================
@@ -920,17 +952,20 @@ public class DataQueryTool {
                 - "近1年" → 开始时间 = 最大时间往前推1年的最后一天
                 - "今年" → 开始时间 = 当年1月1日，结束时间 = 最大时间
                 - "去年" → 开始时间 = 去年1月1日，结束时间 = 去年12月31日
-                - 默认（未指定时间）→ 近6个月
+                - 默认（未指定时间）→ 开始时间=最大时间，结束时间 = 最大时间
                 
                 ## 地区解析规则
-                - 北京和上海 → codes:["110000","310000"], level:2
-                - 北京 → codes:["110000"], level:2
-                - 上海和深圳 → codes:["310000","440300"], level:2
-                - 各省/各省份 → level:2（不指定codes，查询所有省级）
-                - 全国 → level:1, code:"100000"
+                - 默认（未指定地区），默认全国 → codes:["100000"]
+                - 北京和上海 → codes:["110000","310000"]
+                - 北京 → codes:["110000"]
+                - 上海和深圳 → codes:["310000","440300"]
+                - 各省/各省份/分地区 → level:1
+                - 各市 → level:2
+                - 全国 →  codes:["100000"]
                 
                 ## 维度匹配规则
                 - 从提供的维度集合中匹配
+                - 默认（未指定该维度），返回该维度的默认值 -> edu_level:["默认值"]
                 - 支持多值，如 "本科和硕士" → edu_level:["3","4"]
                 - 交叉分析：如 "不同学历对比" → 包含所有非默认学历值
                 
@@ -938,7 +973,7 @@ public class DataQueryTool {
                 {
                   "region": {
                     "codes": ["110000", "310000"],
-                    "level": 2,
+                    "level": 1,
                     "name": "北京和上海"
                   },
                   "timeRange": {
