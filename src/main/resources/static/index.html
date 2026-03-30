@@ -171,6 +171,17 @@
             return escapeHtml(text).replace(/\n/g, '<br>');
         }
 
+        // 支持 Unicode 的 Base64 解码
+        function decodeBase64(base64) {
+            try {
+                const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+                return new TextDecoder().decode(bytes);
+            } catch (e) {
+                console.error('Base64 decode error:', e);
+                return '';
+            }
+        }
+
         // 当前消息容器
         let currentMessageEl = null;
         let currentContentEl = null;
@@ -319,9 +330,9 @@
                             
                             // 解析 Base64 编码的事件: event|content|data
                             const parts = dataStr.split('|');
-                            const eventType = parts[0] ? atob(parts[0]) : '';
-                            const content = parts[1] ? atob(parts[1]) : '';
-                            const extraData = parts[2] ? atob(parts[2]) : null;
+                            const eventType = parts[0] ? decodeBase64(parts[0]) : '';
+                            const content = parts[1] ? decodeBase64(parts[1]) : '';
+                            const extraData = parts[2] ? decodeBase64(parts[2]) : null;
                             
                             if (!hasCreatedMessage && eventType !== 'done') {
                                 createMessageContainer();
@@ -351,7 +362,7 @@
                 if (buffer.startsWith('data: ')) {
                     const dataStr = buffer.slice(6).trim();
                     const parts = dataStr.split('|');
-                    const eventType = parts[0] ? atob(parts[0]) : '';
+                    const eventType = parts[0] ? decodeBase64(parts[0]) : '';
                     if (eventType === 'done') {
                         finishStream();
                     }
