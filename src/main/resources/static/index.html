@@ -317,11 +317,11 @@
                         if (line.startsWith('data: ')) {
                             const dataStr = line.slice(6).trim();
                             
-                            // 解析事件类型和内容
+                            // 解析 Base64 编码的事件: event|content|data
                             const parts = dataStr.split('|');
-                            const eventType = parts[0];
-                            const content = parts[1] ? parts[1].replace(/\\n/g, '\n').replace(/\\|/g, '|') : '';
-                            const extraData = parts[2] || null;
+                            const eventType = parts[0] ? atob(parts[0]) : '';
+                            const content = parts[1] ? atob(parts[1]) : '';
+                            const extraData = parts[2] ? atob(parts[2]) : null;
                             
                             if (!hasCreatedMessage && eventType !== 'done') {
                                 createMessageContainer();
@@ -351,7 +351,8 @@
                 if (buffer.startsWith('data: ')) {
                     const dataStr = buffer.slice(6).trim();
                     const parts = dataStr.split('|');
-                    if (parts[0] === 'done') {
+                    const eventType = parts[0] ? atob(parts[0]) : '';
+                    if (eventType === 'done') {
                         finishStream();
                     }
                 }
