@@ -2,6 +2,7 @@ package com.lowaltitude.agent.controller;
 
 import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
+import com.lowaltitude.agent.stream.StreamContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -51,40 +52,95 @@ public class ChatController {
     }
 
     /**
-     * 流式聊天接口（SSE）
+     * 流式聊天接口（SSE）- 新版
+     * 支持输出工具调用、智能体调用流程
      */
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> chatStream(@RequestBody ChatRequest request) {
         log.info("Received stream chat request: {}", request.getMessage());
         
-        Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
+        Sinks.Many<StreamEvent> sink = Sinks.many().unicast().onBackpressureBuffer();
+        
+        // 设置当前线程的流式上下文
+        StreamContext.setSink(sink);
+        
+        // 发送开始思考事件
+        sink.tryEmitNext(StreamEvent.thinking("正在分析您的请求..."));
         
         try {
             supervisorAgent.stream(request.getMessage())
                     .subscribe(
                             output -> {
-                                String content = extractContent(output);
-                                if (content != null && !content.isEmpty()) {
-                                    sink.tryEmitNext("data: " + content + "\n\n");
-                                }
+                                processStreamOutput(output, sink);
                             },
                             error -> {
                                 log.error("Stream error", error);
-                                sink.tryEmitNext("data: [ERROR] " + error.getMessage() + "\n\n");
-                                sink.tryEmitComplete();
+                                sink.tryEmitNext(StreamEvent.error(error.getMessage()));
+                                sink.tryEmitNext(StreamEvent.done());
+                                StreamContext.clear();
                             },
                             () -> {
-                                sink.tryEmitNext("data: [DONE]\n\n");
-                                sink.tryEmitComplete();
+                                sink.tryEmitNext(StreamEvent.done());
+                                StreamContext.clear();
                             }
                     );
         } catch (Exception e) {
             log.error("Stream setup error", e);
-            sink.tryEmitNext("data: [ERROR] " + e.getMessage() + "\n\n");
-            sink.tryEmitComplete();
+            sink.tryEmitNext(StreamEvent.error(e.getMessage()));
+            sink.tryEmitNext(StreamEvent.done());
+            StreamContext.clear();
         }
         
-        return sink.asFlux();
+        return sink.asFlux().map(StreamEvent::toSseString);
+    }
+    
+    /**
+     * 处理流式输出
+     */
+    private void processStreamOutput(Object output, Sinks.Many<StreamEvent> sink) {
+        if (output == null) return;
+        
+        // 处理 AssistantMessage
+        if (output instanceof AssistantMessage msg) {
+            String text = msg.getText();
+            if (text != null && !text.isEmpty()) {
+                sink.tryEmitNext(StreamEvent.content(text));
+            }
+            return;
+        }
+        
+        // 处理 ToolMessage (工具调用结果)
+        if (output.getClass().getSimpleName().equals("ToolMessage")) {
+            try {
+                String toolName = (String) output.getClass().getMethod("getToolName").invoke(output);
+                sink.tryEmitNext(StreamEvent.toolResult(toolName, "执行完成", 0));
+            } catch (Exception e) {
+                // ignore
+            }
+            return;
+        }
+        
+        // 处理其他类型的消息，尝试提取 Agent 调用信息
+        String str = output.toString();
+        
+        // 检测 Agent 调用 - 根据 Spring AI Alibaba 的输出格式
+        if (str.contains("agent") || str.contains("Agent")) {
+            // 尝试提取 Agent 名称
+            if (str.contains("chat_agent")) {
+                sink.tryEmitNext(StreamEvent.agentCall("chat_agent", "处理闲聊问候"));
+            } else if (str.contains("data_query_agent")) {
+                sink.tryEmitNext(StreamEvent.agentCall("data_query_agent", "执行数据查询"));
+            } else if (str.contains("article_agent")) {
+                sink.tryEmitNext(StreamEvent.agentCall("article_agent", "检索文章资讯"));
+            } else if (str.contains("policy_agent")) {
+                sink.tryEmitNext(StreamEvent.agentCall("policy_agent", "查询政策法规"));
+            }
+        }
+        
+        // 如果是纯文本内容，直接输出
+        if (!str.contains("{") && !str.isEmpty()) {
+            sink.tryEmitNext(StreamEvent.content(str));
+        }
     }
 
     /**
@@ -124,21 +180,17 @@ public class ChatController {
 
     /**
      * 从流式输出中提取内容
-     * 简化处理：尝试获取文本表示
      */
     private String extractContent(Object output) {
         if (output == null) {
             return "";
         }
         
-        // 尝试获取文本内容
-        String str = output.toString();
-        
         // 如果是 AssistantMessage，提取文本
         if (output instanceof AssistantMessage msg) {
             return msg.getText();
         }
         
-        return str;
+        return output.toString();
     }
 }

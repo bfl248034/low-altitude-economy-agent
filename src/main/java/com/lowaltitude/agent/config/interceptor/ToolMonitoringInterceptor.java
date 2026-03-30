@@ -4,38 +4,61 @@ import com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallHandler;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallRequest;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ToolCallResponse;
 import com.alibaba.cloud.ai.graph.agent.interceptor.ToolInterceptor;
+import com.lowaltitude.agent.controller.StreamEvent;
+import com.lowaltitude.agent.stream.StreamContext;
 
-public class ToolMonitoringInterceptor  extends ToolInterceptor{
+import lombok.extern.slf4j.Slf4j;
 
-	
-	@Override
-	  public ToolCallResponse interceptToolCall(ToolCallRequest request, ToolCallHandler handler) {
-	      String toolName = request.getToolName();
-	      long startTime = System.currentTimeMillis();
+@Slf4j
+public class ToolMonitoringInterceptor extends ToolInterceptor {
 
-	      System.out.println("执行工具: " + toolName);
+    @Override
+    public ToolCallResponse interceptToolCall(ToolCallRequest request, ToolCallHandler handler) {
+        String toolName = request.getToolName();
+        String params = request.getArguments() != null ? request.getArguments().toString() : "";
+        long startTime = System.currentTimeMillis();
 
-	      try {
-	          ToolCallResponse response = handler.call(request);
-	          System.out.println("工具执行结果: {} " + response.getResult());
-	          long duration = System.currentTimeMillis() - startTime;
-	          System.out.println("工具 " + toolName + " 执行成功 (耗时: " + duration + "ms)");
+        // 打印到控制台
+        System.out.println("执行工具: " + toolName);
+        
+        // 发送到 SSE 流
+        if (StreamContext.isActive()) {
+            StreamContext.emit(StreamEvent.toolCall(toolName, params));
+        }
 
-	          return response;
-	      } catch (Exception e) {
-	          long duration = System.currentTimeMillis() - startTime;
-	          System.err.println("工具 " + toolName + " 执行失败 (耗时: " + duration + "ms): " + e.getMessage());
+        try {
+            ToolCallResponse response = handler.call(request);
+            long duration = System.currentTimeMillis() - startTime;
+            
+            System.out.println("工具执行结果: {} " + response.getResult());
+            System.out.println("工具 " + toolName + " 执行成功 (耗时: " + duration + "ms)");
 
-	          return ToolCallResponse.of(
-	              request.getToolCallId(),
-	              request.getToolName(),
-	              "工具执行失败: " + e.getMessage()
-	          );
-	      }
-	  }
+            // 发送工具完成事件
+            if (StreamContext.isActive()) {
+                StreamContext.emit(StreamEvent.toolResult(toolName, 
+                    response.getResult() != null ? response.getResult().toString() : "", duration));
+            }
 
-	  @Override
-	  public String getName() {
-	      return "ToolMonitoringInterceptor";
-	  }
+            return response;
+        } catch (Exception e) {
+            long duration = System.currentTimeMillis() - startTime;
+            System.err.println("工具 " + toolName + " 执行失败 (耗时: " + duration + "ms): " + e.getMessage());
+
+            // 发送工具错误事件
+            if (StreamContext.isActive()) {
+                StreamContext.emit(StreamEvent.toolResult(toolName, "错误: " + e.getMessage(), duration));
+            }
+
+            return ToolCallResponse.of(
+                request.getToolCallId(),
+                request.getToolName(),
+                "工具执行失败: " + e.getMessage()
+            );
+        }
+    }
+
+    @Override
+    public String getName() {
+        return "ToolMonitoringInterceptor";
+    }
 }
