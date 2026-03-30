@@ -193,6 +193,53 @@
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
 
+        // 当前流式消息元素
+        let currentStreamMessageEl = null;
+        let currentStreamTextEl = null;
+
+        function createStreamMessage() {
+            typingEl.classList.add('hidden');
+            const div = document.createElement('div');
+            div.className = 'message-bubble flex gap-3';
+            div.innerHTML = `
+                <div class="w-8 h-8 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center flex-shrink-0">
+                    <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                </div>
+                <div class="bg-white/10 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[80%]">
+                    <p class="text-white/90 text-sm leading-relaxed"></p>
+                    <span class="inline-block w-2 h-4 bg-blue-400 animate-pulse ml-0.5 align-middle"></span>
+                </div>
+            `;
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+            currentStreamMessageEl = div;
+            currentStreamTextEl = div.querySelector('p');
+            return div;
+        }
+
+        function appendStreamContent(text) {
+            if (!currentStreamTextEl) return;
+            
+            // 追加纯文本内容
+            const currentText = currentStreamTextEl.getAttribute('data-raw') || '';
+            const newText = currentText + text;
+            currentStreamTextEl.setAttribute('data-raw', newText);
+            currentStreamTextEl.innerHTML = formatMessage(newText);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function finishStream() {
+            if (currentStreamMessageEl) {
+                const cursor = currentStreamMessageEl.querySelector('span.animate-pulse');
+                if (cursor) cursor.remove();
+            }
+            currentStreamMessageEl = null;
+            currentStreamTextEl = null;
+            sendBtn.disabled = false;
+        }
+
         async function sendMessage() {
             const message = inputEl.value.trim();
             if (!message) return;
@@ -203,22 +250,70 @@
             sendBtn.disabled = true;
 
             try {
-                const response = await fetch('/api/chat', {
+                const response = await fetch('/api/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message })
                 });
 
-                const data = await response.json();
-                
-                if (data.success) {
-                    addBotMessage(data.message);
-                } else {
-                    addBotMessage('抱歉，处理出现了问题：' + (data.error || '未知错误'));
+                if (!response.ok) {
+                    throw new Error('请求失败: ' + response.status);
                 }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let hasCreatedMessage = false;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // 保留不完整的行
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const data = line.slice(6).trim();
+                            
+                            if (data === '[DONE]') {
+                                finishStream();
+                                return;
+                            }
+                            if (data.startsWith('[ERROR]')) {
+                                if (!hasCreatedMessage) {
+                                    createStreamMessage();
+                                    hasCreatedMessage = true;
+                                }
+                                appendStreamContent(data);
+                                finishStream();
+                                return;
+                            }
+                            
+                            if (!hasCreatedMessage) {
+                                createStreamMessage();
+                                hasCreatedMessage = true;
+                            }
+                            appendStreamContent(data);
+                        }
+                    }
+                }
+
+                // 处理剩余缓冲区
+                if (buffer.startsWith('data: ')) {
+                    const data = buffer.slice(6).trim();
+                    if (data !== '[DONE]' && !data.startsWith('[ERROR]')) {
+                        if (!hasCreatedMessage) createStreamMessage();
+                        appendStreamContent(data);
+                    }
+                }
+                
+                finishStream();
+
             } catch (error) {
+                typingEl.classList.add('hidden');
                 addBotMessage('网络错误，请稍后重试：' + error.message);
-            } finally {
                 sendBtn.disabled = false;
             }
         }
