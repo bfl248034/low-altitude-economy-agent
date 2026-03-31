@@ -38,6 +38,76 @@
             0%, 50% { opacity: 1; }
             51%, 100% { opacity: 0; }
         }
+        
+        /* 工具卡片样式 */
+        .tool-card {
+            animation: slideIn 0.3s ease;
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+        .tool-card-header {
+            padding: 8px 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s;
+        }
+        .tool-card-header:hover {
+            opacity: 0.9;
+        }
+        .tool-card-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }
+        .tool-card.expanded .tool-card-content {
+            max-height: 500px;
+        }
+        .tool-card.expanded .expand-icon {
+            transform: rotate(90deg);
+        }
+        .expand-icon {
+            transition: transform 0.2s;
+            font-size: 10px;
+        }
+        
+        /* 智能体颜色主题 */
+        .agent-chat { background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.1)); border-left: 3px solid #10b981; }
+        .agent-data { background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(37, 99, 235, 0.1)); border-left: 3px solid #3b82f6; }
+        .agent-policy { background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(124, 58, 237, 0.1)); border-left: 3px solid #8b5cf6; }
+        .agent-article { background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.1)); border-left: 3px solid #f59e0b; }
+        .agent-default { background: linear-gradient(135deg, rgba(107, 114, 128, 0.2), rgba(75, 85, 99, 0.1)); border-left: 3px solid #6b7280; }
+        
+        /* JSON 代码样式 */
+        .json-block {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 11px;
+            line-height: 1.5;
+            background: rgba(0,0,0,0.3);
+            padding: 10px;
+            border-radius: 6px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            color: #e5e7eb;
+        }
+        .json-key { color: #93c5fd; }
+        .json-string { color: #86efac; }
+        .json-number { color: #fca5a5; }
+        .json-boolean { color: #fbbf24; }
+        
+        /* 耗时标签 */
+        .duration-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-left: auto;
+        }
+        .duration-fast { background: rgba(16, 185, 129, 0.3); color: #34d399; }
+        .duration-normal { background: rgba(245, 158, 11, 0.3); color: #fbbf24; }
+        .duration-slow { background: rgba(239, 68, 68, 0.3); color: #f87171; }
     </style>
 </head>
 <body class="bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 min-h-screen flex items-center justify-center p-4">
@@ -127,6 +197,7 @@
         let currentFlowEl = null;
         let currentContentEl = null;
         let fullContent = '';
+        let activeToolCards = new Map(); // 跟踪正在执行的工具卡片
 
         function setInput(text) {
             inputEl.value = text;
@@ -148,6 +219,68 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // 格式化 JSON 并添加语法高亮
+        function formatJson(jsonStr) {
+            try {
+                const obj = JSON.parse(jsonStr);
+                const formatted = JSON.stringify(obj, null, 2);
+                return highlightJson(formatted);
+            } catch (e) {
+                return escapeHtml(jsonStr);
+            }
+        }
+
+        // JSON 语法高亮
+        function highlightJson(json) {
+            return json.replace(/(".*?"):/g, '<span class="json-key">$1</span>:')
+                       .replace(/: "(.*?)"/g, ': <span class="json-string">"$1"</span>')
+                       .replace(/: (\d+)/g, ': <span class="json-number">$1</span>')
+                       .replace(/: (true|false)/g, ': <span class="json-boolean">$1</span>');
+        }
+
+        // 获取智能体样式类
+        function getAgentClass(agent) {
+            if (agent.includes('chat')) return 'agent-chat';
+            if (agent.includes('data')) return 'agent-data';
+            if (agent.includes('policy')) return 'agent-policy';
+            if (agent.includes('article')) return 'agent-article';
+            return 'agent-default';
+        }
+
+        // 获取智能体显示名称
+        function getAgentDisplayName(agent) {
+            const names = {
+                'chat_agent': '闲聊助手',
+                'data_query_agent': '数据查询',
+                'policy_agent': '政策查询',
+                'article_agent': '文章检索',
+                'supervisor': '调度中心'
+            };
+            return names[agent] || agent;
+        }
+
+        // 获取智能体图标
+        function getAgentIcon(agent) {
+            if (agent.includes('chat')) return '💬';
+            if (agent.includes('data')) return '📊';
+            if (agent.includes('policy')) return '📜';
+            if (agent.includes('article')) return '📰';
+            return '🤖';
+        }
+
+        // 格式化耗时显示
+        function formatDuration(ms) {
+            if (ms < 1000) return `${ms}ms`;
+            return `${(ms / 1000).toFixed(2)}s`;
+        }
+
+        // 获取耗时样式
+        function getDurationClass(ms) {
+            if (ms < 500) return 'duration-fast';
+            if (ms < 2000) return 'duration-normal';
+            return 'duration-slow';
         }
 
         function addUserMessage(text) {
@@ -185,6 +318,7 @@
             currentFlowEl = div.querySelector('.flow-container');
             currentContentEl = div.querySelector('.content-area p');
             fullContent = '';
+            activeToolCards.clear();
         }
 
         function addFlowStep(icon, text, colorClass) {
@@ -195,6 +329,86 @@
             currentFlowEl.appendChild(div);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
+
+        // 添加工具调用卡片
+        function addToolCard(toolData) {
+            if (!currentFlowEl) return;
+            
+            const cardId = `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            const agentClass = getAgentClass(toolData.agent);
+            const agentName = getAgentDisplayName(toolData.agent);
+            const agentIcon = getAgentIcon(toolData.agent);
+            
+            const div = document.createElement('div');
+            div.className = `tool-card ${agentClass}`;
+            div.id = cardId;
+            div.innerHTML = `
+                <div class="tool-card-header" onclick="toggleToolCard('${cardId}')">
+                    <span class="expand-icon">▶</span>
+                    <span class="text-xs font-medium text-white/90">${agentIcon} ${agentName}</span>
+                    <span class="text-xs text-white/60">⚡ ${toolData.tool}</span>
+                    <span class="loading-dots text-xs text-white/60 ml-auto">执行中...</span>
+                </div>
+                <div class="tool-card-content">
+                    <div class="px-3 pb-3">
+                        <div class="text-xs text-white/50 mb-1">参数:</div>
+                        <div class="json-block">${formatJson(toolData.params)}</div>
+                        <div class="result-area hidden mt-2">
+                            <div class="text-xs text-white/50 mb-1">结果:</div>
+                            <div class="json-block result-content"></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            currentFlowEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+            
+            activeToolCards.set(toolData.agent + '-' + toolData.tool, {
+                id: cardId,
+                data: toolData
+            });
+            
+            return cardId;
+        }
+
+        // 更新工具卡片（执行完成）
+        function updateToolCard(toolData) {
+            const key = toolData.agent + '-' + toolData.tool;
+            const cardInfo = activeToolCards.get(key);
+            
+            if (cardInfo) {
+                const card = document.getElementById(cardInfo.id);
+                if (card) {
+                    // 更新头部信息
+                    const header = card.querySelector('.tool-card-header');
+                    const loadingEl = header.querySelector('.loading-dots');
+                    const durationClass = getDurationClass(toolData.duration);
+                    const durationText = formatDuration(toolData.duration);
+                    
+                    loadingEl.outerHTML = `<span class="duration-badge ${durationClass}">${durationText}</span>`;
+                    
+                    // 显示结果
+                    const resultArea = card.querySelector('.result-area');
+                    const resultContent = card.querySelector('.result-content');
+                    resultArea.classList.remove('hidden');
+                    resultContent.innerHTML = formatJson(toolData.result);
+                    
+                    // 自动展开卡片
+                    card.classList.add('expanded');
+                    messagesEl.scrollTop = messagesEl.scrollHeight;
+                }
+                activeToolCards.delete(key);
+            }
+        }
+
+        // 切换工具卡片展开/折叠
+        window.toggleToolCard = function(cardId) {
+            const card = document.getElementById(cardId);
+            if (card) {
+                card.classList.toggle('expanded');
+            }
+        };
 
         function appendContent(text) {
             if (!currentContentEl) return;
@@ -212,6 +426,7 @@
             currentFlowEl = null;
             currentContentEl = null;
             fullContent = '';
+            activeToolCards.clear();
             sendBtn.disabled = false;
             setStatus('ready', '就绪');
         }
@@ -244,9 +459,6 @@
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n');
                     buffer = lines.pop() || '';
-
-                    let currentEvent = '';
-                    let currentData = '';
 
                     for (const line of lines) {
                         if (!line.trim()) continue;
@@ -281,11 +493,31 @@
                                 case 'step':
                                     addFlowStep('⚡', eventData, 'text-blue-300');
                                     break;
+                                case 'tool_start':
+                                    // 新的详细工具调用事件
+                                    try {
+                                        const toolData = JSON.parse(eventData);
+                                        addToolCard(toolData);
+                                    } catch (e) {
+                                        // 解析失败，忽略
+                                    }
+                                    break;
+                                case 'tool_end':
+                                    // 新的详细工具完成事件
+                                    try {
+                                        const toolData = JSON.parse(eventData);
+                                        updateToolCard(toolData);
+                                    } catch (e) {
+                                        // 解析失败，忽略
+                                    }
+                                    break;
                                 case 'tool_call':
+                                    // 旧版兼容
                                     const [toolName, args] = eventData.split('|');
                                     addFlowStep('🔧', `调用 ${toolName}`, 'text-orange-300');
                                     break;
                                 case 'tool_result':
+                                    // 旧版兼容
                                     const [tName, result] = eventData.split('|');
                                     addFlowStep('✅', `${tName} 完成`, 'text-green-300');
                                     break;

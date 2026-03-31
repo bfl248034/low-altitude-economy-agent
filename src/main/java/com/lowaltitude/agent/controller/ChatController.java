@@ -15,9 +15,12 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
 
 import java.io.IOException;
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 聊天控制器 - 支持流式输出
@@ -31,6 +34,22 @@ import java.util.concurrent.CompletableFuture;
 public class ChatController {
 
     private final ReactAgent supervisorAgent;
+    
+    // 用于跟踪当前执行的工具调用信息（每个流独立）
+    private final Map<String, ToolCallContext> toolCallContexts = new ConcurrentHashMap<>();
+    
+    /**
+     * 工具调用上下文
+     */
+    private static class ToolCallContext {
+        String currentAgent = "supervisor";
+        String currentTool = null;
+        long toolStartTime = 0;
+    }
+    
+    private ToolCallContext getContext(String sessionId) {
+        return toolCallContexts.computeIfAbsent(sessionId, k -> new ToolCallContext());
+    }
 
     /**
      * 普通聊天接口（非流式）
@@ -63,6 +82,9 @@ public class ChatController {
     public Flux<String> chatStream(@RequestBody ChatRequest request) {
         log.info("Received stream chat request: {}", request.getMessage());
         
+        String sessionId = request.getMessage() + "_" + System.currentTimeMillis();
+        ToolCallContext context = getContext(sessionId);
+        
         return Flux.create(sink -> {
             CompletableFuture.runAsync(() -> {
                 try {
@@ -71,16 +93,18 @@ public class ChatController {
                     
                     supervisorAgent.stream(request.getMessage())
                         .subscribe(
-                            output -> processOutput(output, sink),
+                            output -> processOutput(output, sink, context),
                             error -> {
                                 log.error("Stream error", error);
                                 sink.next(formatSseEvent("error", error.getMessage()));
                                 sink.next(formatSseEvent("done", ""));
                                 sink.complete();
+                                toolCallContexts.remove(sessionId);
                             },
                             () -> {
                                 sink.next(formatSseEvent("done", ""));
                                 sink.complete();
+                                toolCallContexts.remove(sessionId);
                             }
                         );
                 } catch (Exception e) {
@@ -88,6 +112,7 @@ public class ChatController {
                     sink.next(formatSseEvent("error", e.getMessage()));
                     sink.next(formatSseEvent("done", ""));
                     sink.complete();
+                    toolCallContexts.remove(sessionId);
                 }
             });
         });
@@ -96,7 +121,7 @@ public class ChatController {
     /**
      * 处理流式输出 - 根据 OutputType 区分不同类型
      */
-    private void processOutput(NodeOutput output, reactor.core.publisher.FluxSink<String> sink) {
+    private void processOutput(NodeOutput output, reactor.core.publisher.FluxSink<String> sink, ToolCallContext ctx) {
         // 检查是否为 StreamingOutput 类型
         if (output instanceof StreamingOutput streamingOutput) {
             OutputType type = streamingOutput.getOutputType();
@@ -116,12 +141,21 @@ public class ChatController {
                     }
                 }
             }
-            // 模型推理完成
+            // 模型推理完成 - 检测到工具调用
             else if (type == OutputType.AGENT_MODEL_FINISHED) {
                 if (streamingOutput.message() instanceof AssistantMessage msg) {
                     // 检查是否有工具调用
                     if (msg.hasToolCalls()) {
                         msg.getToolCalls().forEach(toolCall -> {
+                            // 记录工具调用开始
+                            ctx.currentTool = toolCall.name();
+                            ctx.toolStartTime = System.currentTimeMillis();
+                            
+                            // 发送详细的工具调用开始事件
+                            String toolStartJson = buildToolStartJson(ctx.currentAgent, toolCall.name(), toolCall.arguments());
+                            sink.next(formatSseEvent("tool_start", toolStartJson));
+                            
+                            // 保留旧的 tool_call 事件用于兼容
                             sink.next(formatSseEvent("tool_call", 
                                 toolCall.name() + "|" + toolCall.arguments()));
                         });
@@ -130,13 +164,27 @@ public class ChatController {
             }
             // 工具调用完成
             else if (type == OutputType.AGENT_TOOL_FINISHED) {
+                long duration = ctx.toolStartTime > 0 ? System.currentTimeMillis() - ctx.toolStartTime : 0;
+                
                 if (streamingOutput.message() instanceof ToolResponseMessage toolResponse) {
                     toolResponse.getResponses().forEach(response -> {
+                        // 发送详细的工具完成事件
+                        String toolEndJson = buildToolEndJson(
+                            ctx.currentAgent, 
+                            response.name(), 
+                            response.responseData(),
+                            duration
+                        );
+                        sink.next(formatSseEvent("tool_end", toolEndJson));
+                        
+                        // 保留旧的 tool_result 事件用于兼容
                         sink.next(formatSseEvent("tool_result", 
                             response.name() + "|" + response.responseData()));
                     });
                 }
                 sink.next(formatSseEvent("tool", "工具执行完成"));
+                ctx.currentTool = null;
+                ctx.toolStartTime = 0;
             }
             // Hook 执行完成
             else if (type == OutputType.AGENT_HOOK_FINISHED) {
@@ -147,7 +195,10 @@ public class ChatController {
         else {
             String nodeName = output.node();
             if (nodeName != null && !nodeName.isEmpty()) {
-                // 检测 Agent 名称
+                // 更新当前 Agent
+                ctx.currentAgent = extractAgentName(nodeName);
+                
+                // 检测 Agent 名称并发送事件
                 if (nodeName.contains("chat_agent")) {
                     sink.next(formatSseEvent("agent", "chat_agent|处理闲聊问候"));
                 } else if (nodeName.contains("data_query_agent")) {
@@ -161,6 +212,53 @@ public class ChatController {
                 }
             }
         }
+    }
+    
+    /**
+     * 从节点名称提取 Agent 标识
+     */
+    private String extractAgentName(String nodeName) {
+        if (nodeName.contains("chat_agent")) return "chat_agent";
+        if (nodeName.contains("data_query_agent")) return "data_query_agent";
+        if (nodeName.contains("article_agent")) return "article_agent";
+        if (nodeName.contains("policy_agent")) return "policy_agent";
+        return nodeName;
+    }
+    
+    /**
+     * 构建工具调用开始事件的 JSON
+     */
+    private String buildToolStartJson(String agent, String tool, String args) {
+        // 简化参数显示，限制长度
+        String displayArgs = args;
+        if (args.length() > 500) {
+            displayArgs = args.substring(0, 500) + "...(已截断)";
+        }
+        // 转义特殊字符
+        displayArgs = displayArgs.replace("\\", "\\\\")
+                                 .replace("\"", "\\\"")
+                                 .replace("\n", "\\n")
+                                 .replace("\r", "\\r");
+        
+        return "{\"agent\":\"" + agent + "\",\"tool\":\"" + tool + "\",\"params\":\"" + displayArgs + "\",\"timestamp\":" + System.currentTimeMillis() + "}";
+    }
+    
+    /**
+     * 构建工具调用结束事件的 JSON
+     */
+    private String buildToolEndJson(String agent, String tool, String result, long duration) {
+        // 简化结果显示，限制长度
+        String displayResult = result;
+        if (result.length() > 1000) {
+            displayResult = result.substring(0, 1000) + "...(已截断，共" + result.length() + "字符)";
+        }
+        // 转义特殊字符
+        displayResult = displayResult.replace("\\", "\\\\")
+                                     .replace("\"", "\\\"")
+                                     .replace("\n", "\\n")
+                                     .replace("\r", "\\r");
+        
+        return "{\"agent\":\"" + agent + "\",\"tool\":\"" + tool + "\",\"result\":\"" + displayResult + "\",\"duration\":" + duration + "}";
     }
     
     /**
