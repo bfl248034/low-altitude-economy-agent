@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>低空经济智能体</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
@@ -108,6 +109,74 @@
         .duration-fast { background: rgba(16, 185, 129, 0.3); color: #34d399; }
         .duration-normal { background: rgba(245, 158, 11, 0.3); color: #fbbf24; }
         .duration-slow { background: rgba(239, 68, 68, 0.3); color: #f87171; }
+        
+        /* Markdown 渲染样式 */
+        .markdown-content h1, .markdown-content h2, .markdown-content h3, 
+        .markdown-content h4, .markdown-content h5, .markdown-content h6 {
+            font-weight: 600;
+            margin: 12px 0 8px 0;
+            color: #f3f4f6;
+        }
+        .markdown-content h1 { font-size: 1.4em; }
+        .markdown-content h2 { font-size: 1.25em; }
+        .markdown-content h3 { font-size: 1.1em; }
+        .markdown-content p { margin: 8px 0; }
+        .markdown-content ul, .markdown-content ol {
+            margin: 8px 0;
+            padding-left: 20px;
+        }
+        .markdown-content li { margin: 4px 0; }
+        .markdown-content strong { font-weight: 600; color: #fff; }
+        .markdown-content em { font-style: italic; }
+        .markdown-content code {
+            background: rgba(0,0,0,0.3);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9em;
+            color: #fca5a5;
+        }
+        .markdown-content pre {
+            background: rgba(0,0,0,0.4);
+            padding: 12px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 12px 0;
+        }
+        .markdown-content pre code {
+            background: transparent;
+            padding: 0;
+            color: #e5e7eb;
+        }
+        .markdown-content blockquote {
+            border-left: 3px solid #3b82f6;
+            padding-left: 12px;
+            margin: 12px 0;
+            color: #9ca3af;
+        }
+        .markdown-content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 12px 0;
+        }
+        .markdown-content th, .markdown-content td {
+            border: 1px solid rgba(255,255,255,0.1);
+            padding: 8px 12px;
+            text-align: left;
+        }
+        .markdown-content th {
+            background: rgba(0,0,0,0.2);
+            font-weight: 600;
+        }
+        .markdown-content a {
+            color: #60a5fa;
+            text-decoration: underline;
+        }
+        .markdown-content hr {
+            border: none;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            margin: 16px 0;
+        }
     </style>
 </head>
 <body class="bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 min-h-screen flex items-center justify-center p-4">
@@ -198,6 +267,20 @@
         let currentContentEl = null;
         let fullContent = '';
         let activeToolCards = new Map(); // 跟踪正在执行的工具卡片
+
+        // 配置 marked.js
+        marked.setOptions({
+            breaks: true,  // 支持换行符转换
+            gfm: true,     // 支持 GitHub Flavored Markdown
+            sanitize: false // 允许 HTML（注意：确保后端输出安全）
+        });
+
+        // 自定义 renderer 处理代码块
+        const renderer = new marked.Renderer();
+        renderer.code = function(code, language) {
+            return `<pre><code class="language-${language || ''}">${escapeHtml(code)}</code></pre>`;
+        };
+        marked.setOptions({ renderer: renderer });
 
         function setInput(text) {
             inputEl.value = text;
@@ -306,8 +389,8 @@
                 </div>
                 <div class="bg-white/10 rounded-2xl rounded-tl-sm px-4 py-3 max-w-[85%] flex-1">
                     <div class="flow-container space-y-1 mb-3"></div>
-                    <div class="content-area">
-                        <p class="text-white/90 text-sm leading-relaxed"></p>
+                    <div class="content-area markdown-content text-white/90 text-sm leading-relaxed">
+                        <p class=""></p>
                         <span class="cursor"></span>
                     </div>
                 </div>
@@ -316,7 +399,7 @@
             messagesEl.scrollTop = messagesEl.scrollHeight;
             currentMsgEl = div;
             currentFlowEl = div.querySelector('.flow-container');
-            currentContentEl = div.querySelector('.content-area p');
+            currentContentEl = div.querySelector('.content-area');
             fullContent = '';
             activeToolCards.clear();
         }
@@ -413,7 +496,9 @@
         function appendContent(text) {
             if (!currentContentEl) return;
             fullContent += text;
-            currentContentEl.innerHTML = escapeHtml(fullContent).replace(/\n/g, '<br>');
+            // 使用 marked.js 渲染 Markdown
+            const htmlContent = marked.parse(fullContent);
+            currentContentEl.innerHTML = htmlContent;
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
 
