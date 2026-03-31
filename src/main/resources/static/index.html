@@ -249,53 +249,61 @@
                     let currentData = '';
 
                     for (const line of lines) {
-                        if (line.startsWith('event:')) {
-                            currentEvent = line.slice(6).trim();
-                        } else if (line.startsWith('data:')) {
-                            currentData = line.slice(5).trim();
-                        } else if (line === '' && currentEvent) {
-                            if (!hasCreated && currentEvent !== 'done') {
+                        if (!line.trim()) continue;
+                        
+                        // 解析 Spring SSE 格式: data: {json}
+                        let jsonStr = line;
+                        if (line.startsWith('data:')) {
+                            jsonStr = line.slice(5).trim();
+                        }
+                        
+                        try {
+                            const parsed = JSON.parse(jsonStr);
+                            const eventType = parsed.event;
+                            const eventData = parsed.data;
+                            
+                            if (!hasCreated && eventType !== 'done') {
                                 createBotContainer();
                                 hasCreated = true;
                             }
 
-                            switch(currentEvent) {
+                            switch(eventType) {
                                 case 'thinking':
-                                    addFlowStep('🤔', currentData, 'text-yellow-300');
+                                    addFlowStep('🤔', eventData, 'text-yellow-300');
                                     break;
                                 case 'thinking_detail':
-                                    addFlowStep('💭', currentData, 'text-gray-400');
+                                    addFlowStep('💭', eventData, 'text-gray-400');
                                     break;
                                 case 'agent':
-                                    const [agentName, purpose] = currentData.split('|');
+                                    const [agentName, purpose] = eventData.split('|');
                                     addFlowStep('🤖', `调用 ${agentName}: ${purpose || '处理中'}`, 'text-purple-300');
                                     break;
                                 case 'step':
-                                    addFlowStep('⚡', currentData, 'text-blue-300');
+                                    addFlowStep('⚡', eventData, 'text-blue-300');
                                     break;
                                 case 'tool_call':
-                                    const [toolName, args] = currentData.split('|');
+                                    const [toolName, args] = eventData.split('|');
                                     addFlowStep('🔧', `调用 ${toolName}`, 'text-orange-300');
                                     break;
                                 case 'tool_result':
-                                    const [tName, result] = currentData.split('|');
+                                    const [tName, result] = eventData.split('|');
                                     addFlowStep('✅', `${tName} 完成`, 'text-green-300');
                                     break;
                                 case 'tool':
-                                    addFlowStep('🔧', currentData, 'text-orange-300');
+                                    addFlowStep('🔧', eventData, 'text-orange-300');
                                     break;
                                 case 'content':
-                                    appendContent(currentData);
+                                    appendContent(eventData);
                                     break;
                                 case 'error':
-                                    addFlowStep('❌', currentData, 'text-red-300');
+                                    addFlowStep('❌', eventData, 'text-red-300');
                                     break;
                                 case 'done':
                                     finishStream();
                                     return;
                             }
-                            currentEvent = '';
-                            currentData = '';
+                        } catch (e) {
+                            // 不是 JSON 格式，可能是普通 SSE 行，忽略
                         }
                     }
                 }

@@ -164,10 +164,11 @@ public class ChatController {
     }
     
     /**
-     * 格式化 SSE 事件
+     * 格式化 SSE 事件 - 使用 JSON 格式，避免 Spring SSE 双重编码问题
+     * Spring WebFlux 会自动处理 SSE 格式，这里只返回 JSON 数据
      */
     private String formatSseEvent(String event, String data) {
-        return "event: " + event + "\ndata: " + data + "\n\n";
+        return "{\"event\":\"" + event + "\",\"data\":\"" + data.replace("\"", "\\\"") + "\"}";
     }
 
     /**
