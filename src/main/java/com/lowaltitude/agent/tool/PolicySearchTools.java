@@ -29,7 +29,7 @@ public class PolicySearchTools {
 	private static String url = "http://192.168.1.210:6300/rag/search";
 	
 	@Tool(name = "searchPolicy", description = "搜索政策内容")
-	private String doHttpPost( 
+	public static String doHttpPost( 
 			@ToolParam(description = "用户原始查询，如'小微企业申请装修补贴的具体政策有哪些？'")String searchTxt,
 			@ToolParam(description = "返回候选数量，默认10")Integer topK) {
 		String jsonBody = "{ \"question\": \""+searchTxt+"\", \"top_k\": "+topK+" }";

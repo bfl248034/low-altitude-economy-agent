@@ -5,6 +5,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -20,8 +21,8 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -56,7 +57,7 @@ public class DataQueryTool {
     private final InMemoryVectorSearchService vectorSearchService;
     private final MetadataService metadataService;
     private final DynamicQueryService dynamicQueryService;
-    private final ChatModel chatModel;
+    private final OllamaChatModel chatModel;
     
     private final ExecutorService queryExecutor = Executors.newFixedThreadPool(10);
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
@@ -114,6 +115,7 @@ public class DataQueryTool {
             // 1. 收集所有指标的信息
             List<String> indicatorIds = new ArrayList<>();
             Map<String, Map<String, Object>> indicatorMetaMap = new HashMap<>();
+            List<Map<String, Object>> indicatorList = new ArrayList<Map<String,Object>>();
             Map<String, List<Map<String, Object>>> tableDimensionsMap = new HashMap<>();
             Map<String, Map<String, Object>> tableSchemaMap = new HashMap<>();
             Set<String> tableIds = new HashSet<>();
@@ -130,6 +132,7 @@ public class DataQueryTool {
                 
                 // 获取指标元数据
                 Map<String, Object> meta = getIndicatorMetaInternal(indicatorId);
+                indicatorList.add(meta);
                 indicatorMetaMap.put(indicatorId, meta);
                 
                 // 获取最新时间，找出最大值
@@ -208,7 +211,10 @@ public class DataQueryTool {
                 String indicatorId = (String) ind.get("indicatorId");
                 tableIndicatorMap.computeIfAbsent(tableId, k -> new ArrayList<>()).add(indicatorId);
             }
-            
+            Map<String, Object> dimConditions = parseDimensionConditions(dimensionConditions);
+            if(dimConditions == null) {
+            	dimConditions = new HashMap<String, Object>();
+            }
             // 为每个表生成SQL
             for (Map.Entry<String, List<String>> entry : tableIndicatorMap.entrySet()) {
                 String tableId = entry.getKey();
@@ -224,7 +230,7 @@ public class DataQueryTool {
                     timeRange.end.format(DATE_FORMATTER),
                     regionCodes,
                     regionLevel,
-                    dimensionConditions
+                    dimConditions
                 );
                 log.info("生成 sourceId {}",table.getSourceId());
                 log.info("生成 sql {}",sql);
@@ -241,6 +247,7 @@ public class DataQueryTool {
             resultMap.put("success", true);
     		resultMap.put("indicators", indicators);
 			resultMap.put("indicatorIds", indicatorIds);
+			resultMap.put("indicatorList", indicatorList);
             resultMap.put("allDimensions", allDimensions);
             resultMap.put("maxLatestDate", maxLatestDate.format(DATE_FORMATTER));
             resultMap.put("frequency", maxFrequency);
@@ -612,11 +619,11 @@ public class DataQueryTool {
 
     private String generateSql(DataTableConfig table, List<String> indicatorIds,
                                 String timeStart, String timeEnd, List<String> regionCodes, 
-                                Integer regionLevel, String dimensionConditions) {
+                                Integer regionLevel, Map<String, Object> dimConditions) {
         StringBuilder sql = new StringBuilder();
         
-        Map<String, Object> dimConditions = parseDimensionConditions(dimensionConditions);
-        log.info("生成sql，维度信息 {} ",dimensionConditions);
+      
+//        log.info("生成sql，维度信息 {} ",dimensionConditions);
         List<Map<String, Object>> dimensionConfigs = getDimensionConfigsInternal(table.getTableId(), true);
         
         sql.append("SELECT ");
@@ -627,11 +634,17 @@ public class DataQueryTool {
         	table.setIndicatorColumn("indicator_id");
         }
         sql.append(table.getIndicatorColumn()).append(", ");
+        Set<String> colSet = new HashSet<String>();
         for (Map<String, Object> dimConfig : dimensionConfigs) {
             String columnName = (String) dimConfig.get("columnName");
             if (columnName != null && !columnName.isEmpty()) {
                 sql.append(columnName).append(", ");
             }
+            colSet.add(columnName);
+            if(!dimConditions.containsKey(columnName)) {
+            	dimConditions.put(columnName, Arrays.asList(dimConfig.get("defaultValue")));
+            }
+            
         }
         
         sql.append(table.getValueColumn());
@@ -684,24 +697,27 @@ public class DataQueryTool {
             }else if(obj instanceof List){
             	values = (List<String>) obj;
             }
+            if(!colSet.contains(columnName)) {
+            	continue;
+            }
             if (values != null && !values.isEmpty()) {
-                String defaultValue = null;
-                boolean flag = false;
-                for (Map<String, Object> dimConfig : dimensionConfigs) {
-                    if (columnName.equals(dimConfig.get("columnName"))) {
-                        defaultValue = (String) dimConfig.get("defaultValue");
-                        flag = true;
-                        break;
-                    }
-                }
-                if(!flag) {
-                	continue;
-                }
+//                String defaultValue = null;
+//                boolean flag = false;
+//                for (Map<String, Object> dimConfig : dimensionConfigs) {
+//                    if (columnName.equals(dimConfig.get("columnName"))) {
+//                        defaultValue = (String) dimConfig.get("defaultValue");
+//                        flag = true;
+//                        break;
+//                    }
+//                }
+//                if(!flag) {
+//                	continue;
+//                }
                 if (values.size() == 1) {
                     String value = values.get(0);
-                    if (defaultValue == null || !defaultValue.equals(value)) {
+//                    if (defaultValue == null || !defaultValue.equals(value)) {
                         conditions.add(columnName + " = '" + value + "'");
-                    }
+//                    }
                 } else {
 //                    List<String> validValues = values.stream()
 //                            .filter(v -> defaultValue == null || !defaultValue.equals(v))
@@ -965,9 +981,9 @@ public class DataQueryTool {
                 
                 ## 维度匹配规则
                 - 从提供的维度集合中匹配
-                - 默认（未指定该维度），返回该维度的默认值 -> edu_level:["默认值"]
+                - 默认（未指定该维度），返回该维度的默认值,从defaultValue字段中取 -> edu_level:["默认值"]
                 - 支持多值，如 "本科和硕士" → edu_level:["3","4"]
-                - 交叉分析：如 "不同学历对比" → 包含所有非默认学历值
+                - 交叉分析：如 "不同学历对比/分学历" → 包含所有非默认学历值 edu_level:["非默认值1","非默认值2","非默认值3","非默认值4"....]
                 
                 ## 输出JSON格式
                 {

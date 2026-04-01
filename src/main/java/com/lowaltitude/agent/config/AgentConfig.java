@@ -21,6 +21,8 @@ import com.alibaba.cloud.ai.graph.checkpoint.savers.MemorySaver;
 import com.alibaba.cloud.ai.graph.skills.registry.SkillRegistry;
 import com.alibaba.cloud.ai.graph.skills.registry.classpath.ClasspathSkillRegistry;
 import com.lowaltitude.agent.config.datasource.DynamicDataSourceManager;
+import com.lowaltitude.agent.config.hook.DataSearchRagHook;
+import com.lowaltitude.agent.config.hook.PolicySearchRagHook;
 import com.lowaltitude.agent.config.interceptor.ToolMonitoringInterceptor;
 import com.lowaltitude.agent.tool.DataQueryTool;
 import com.lowaltitude.agent.tool.PolicySearchTools;
@@ -116,7 +118,8 @@ public class AgentConfig {
     		OllamaChatModel chatModel,
             SkillsAgentHook skillsAgentHook,
             DataQueryTool dataQueryTool,
-            ResultFormatTool resultFormatTool) {
+            ResultFormatTool resultFormatTool,
+            DataSearchRagHook dataSearchRagHook) {
         
         List<ToolCallback> toolCallbacks = Arrays.asList(ToolCallbacks.from(dataQueryTool));
         List<ToolCallback> toolCallbacks1 = Arrays.asList(ToolCallbacks.from(resultFormatTool));
@@ -125,69 +128,70 @@ public class AgentConfig {
                 .name("data_query_agent")
                 .model(chatModel)
                 .description("专业处理低空经济数据查询，包括招聘、企业、专利等指标")
-                .instruction("""
-                        你是低空经济数据查询专家。使用 Skills + Tools 完成查询任务。
-                        
-                        ## 核心能力
-                        你可以查询低空经济相关的各类指标数据：
-                        - 招聘类：招聘薪资、岗位数量、招聘企业数
-                        - 企业类：企业数量、新增企业、注册资本分布
-                        - 创新类：专利数量、专利类型分布
-                        
-                        ## 执行流程（3个粗粒度工具）
-                        
-                        Step 1: 指标匹配
-                        - 使用 matchIndicators 工具从用户查询中匹配指标
-                        - 支持多指标匹配
-                        
-                        Step 2: 维度解析+SQL生成（合并工具）
-                        - 使用 parseAndBuildSql 工具，传入用户查询和匹配到的指标列表
-                        - 工具内部会：
-                          1. 收集所有指标所在表的维度，合并去重
-                          2. 找出所有指标中的最大最新时间作为基准
-                          3. LLM解析维度条件，根据最大时间推算时间范围（如近3个月=最大时间-3个月）
-                          4. 按表分组生成SQL（不同表的指标分开查询）
-                        - 返回 sqlTasks 列表，每项包含 tableId、sourceId、indicatorIds、sql
-                        
-                        Step 3: 多源并行查询
-                        - 使用 executeMultiQuery 工具并行执行所有SQL
-                        - 传入从 sqlTasks 提取的 sourceId 和 sql
-                        - 自动合并结果并按时间排序
-                        
-                        ## 多指标跨库查询示例
-                        
-                        用户查询"北京和上海的招聘薪资和企业数量"：
-                        1. matchIndicators 匹配到[招聘薪资, 企业数量]两个指标
-                        2. parseDimensions 解析出地区：codes=["110000","310000"]
-                        3. 检查两个指标的数据源：
-                           - 招聘薪资在 ds_recruitment
-                           - 企业数量在 ds_enterprise
-                        4. 分别生成SQL：
-                           - SQL1: SELECT ... FROM recruitment WHERE region_id IN ('110000','310000')
-                           - SQL2: SELECT ... FROM enterprise WHERE region_id IN ('110000','310000')
-                        5. executeMultiQuery 并行执行两个查询，传入：
-                           [\\{"sourceId":"ds_recruitment","sql":"SQL1..."\\},
-                            \\{"sourceId":"ds_enterprise","sql":"SQL2..."\\}]
-                        6. 获取合并后的结果，按时间排序
-                        - 自动翻译编码、返回格式化数据
-                        
-                        ## 输出要求
-                        返回格式化的数据结果，包含：
-                        - 查询的指标名称
-                        - 时间范围和地区
-                        - 数据表格或趋势描述
-                        - 简要分析结论
-                        - 推荐的相关问题
-                        
-                        ## 注意事项
-                        - 支持多指标查询（如"薪资和岗位数量"）
-                        - 支持多维度值（如"本科和硕士"）
-                        - 支持截面分析（如"不同学历对比"）- 需排除默认值
-                        - 支持省级/市级排名
-                        """)
-                .tools(toolCallbacks)
-                .tools(toolCallbacks1)
-                .hooks(List.of(skillsAgentHook))
+//                .instruction("""
+//                        你是低空经济数据查询专家。使用 Skills + Tools 完成查询任务。
+//                        
+//                        ## 核心能力
+//                        你可以查询低空经济相关的各类指标数据：
+//                        - 招聘类：招聘薪资、岗位数量、招聘企业数
+//                        - 企业类：企业数量、新增企业、注册资本分布
+//                        - 创新类：专利数量、专利类型分布
+//                        
+//                        ## 执行流程（3个粗粒度工具）
+//                        
+//                        Step 1: 指标匹配
+//                        - 使用 matchIndicators 工具从用户查询中匹配指标
+//                        - 支持多指标匹配
+//                        
+//                        Step 2: 维度解析+SQL生成（合并工具）
+//                        - 使用 parseAndBuildSql 工具，传入用户查询和匹配到的指标列表
+//                        - 工具内部会：
+//                          1. 收集所有指标所在表的维度，合并去重
+//                          2. 找出所有指标中的最大最新时间作为基准
+//                          3. LLM解析维度条件，根据最大时间推算时间范围（如近3个月=最大时间-3个月）
+//                          4. 按表分组生成SQL（不同表的指标分开查询）
+//                        - 返回 sqlTasks 列表，每项包含 tableId、sourceId、indicatorIds、sql
+//                        
+//                        Step 3: 多源并行查询
+//                        - 使用 executeMultiQuery 工具并行执行所有SQL
+//                        - 传入从 sqlTasks 提取的 sourceId 和 sql
+//                        - 自动合并结果并按时间排序
+//                        
+//                        ## 多指标跨库查询示例
+//                        
+//                        用户查询"北京和上海的招聘薪资和企业数量"：
+//                        1. matchIndicators 匹配到[招聘薪资, 企业数量]两个指标
+//                        2. parseDimensions 解析出地区：codes=["110000","310000"]
+//                        3. 检查两个指标的数据源：
+//                           - 招聘薪资在 ds_recruitment
+//                           - 企业数量在 ds_enterprise
+//                        4. 分别生成SQL：
+//                           - SQL1: SELECT ... FROM recruitment WHERE region_id IN ('110000','310000')
+//                           - SQL2: SELECT ... FROM enterprise WHERE region_id IN ('110000','310000')
+//                        5. executeMultiQuery 并行执行两个查询，传入：
+//                           [\\{"sourceId":"ds_recruitment","sql":"SQL1..."\\},
+//                            \\{"sourceId":"ds_enterprise","sql":"SQL2..."\\}]
+//                        6. 获取合并后的结果，按时间排序
+//                        - 自动翻译编码、返回格式化数据
+//                        
+//                        ## 输出要求
+//                        返回格式化的数据结果，包含：
+//                        - 查询的指标名称
+//                        - 时间范围和地区
+//                        - 数据表格或趋势描述
+//                        - 简要分析结论
+//                        - 推荐的相关问题
+//                        
+//                        ## 注意事项
+//                        - 支持多指标查询（如"薪资和岗位数量"）
+//                        - 支持多维度值（如"本科和硕士"）
+//                        - 支持截面分析（如"不同学历对比"）- 需排除默认值
+//                        - 支持省级/市级排名
+//                        """)
+//                .tools(toolCallbacks)
+//                .tools(toolCallbacks1)
+//                .hooks(List.of(skillsAgentHook))
+                .hooks(dataSearchRagHook)
                 .interceptors(new ToolMonitoringInterceptor())
 //                .enableLogging(true)
                 .saver(new MemorySaver())
@@ -219,22 +223,22 @@ public class AgentConfig {
      * 政策分析 Agent - 预留（功能开发中）
      */
     @Bean
-    public ReactAgent policyAgent(OllamaChatModel chatModel,PolicySearchTools policySearchTools) {
+    public ReactAgent policyAgent(OllamaChatModel chatModel,PolicySearchRagHook policySearchRagHook,PolicySearchTools policySearchTools) {
     	List<ToolCallback> toolCallbacks = Arrays.asList(ToolCallbacks.from(policySearchTools));
         return ReactAgent.builder()
                 .name("policy_agent")
                 .model(chatModel)
                 .description("专业处理低空经济相关政策的查询")
                 .instruction("""
-                        政策分析功能正在开发中。
                         你是低空经济政策查询专家。使用 Tools 完成查询政策查询任务。
                         
                         ## 核心能力
-                        你可以查询低空经济相关的各类政策内容数据，
+                        你可以查询低空经济相关的各类政策内容数据
                         """)
                 .saver(new MemorySaver())
                 .tools(toolCallbacks)
                 .interceptors(new ToolMonitoringInterceptor())
+                .hooks(policySearchRagHook)
                 .build();
     }
 
@@ -263,7 +267,7 @@ public class AgentConfig {
                   * "能做什么"、"有什么功能"
                   * "谢谢"、"再见"
                   * 其他一般性问候
-                - **处理方式**: 调用 chat_agent，然后 FINISH
+                - **处理方式**: 调用 chat_agent
                 
                 ### data_query_agent
                 - **功能**: 专业处理低空经济数据查询
@@ -274,7 +278,7 @@ public class AgentConfig {
                   * 地区相关：北京、上海、深圳、各省、各城市
                   * 时间相关：近6个月、2024年、趋势、走势
                   * 分析类型：排名、对比、分布、占比
-                - **处理方式**: 调用 data_query_agent，然后直接返回智能体结果
+                - **处理方式**: 调用 data_query_agent
                 
                 ### article_agent
                 - **功能**: 文章检索（开发中）
@@ -284,7 +288,7 @@ public class AgentConfig {
                 ### policy_agent
                 - **功能**: 政策查询分析
                 - **适用场景**: 用户要求查询政策、法规、文件
-                - **处理方式**: 调用 policy_agent，然后直接返回智能体结果
+                - **处理方式**: 调用 policy_agent
                 
                 ## 决策规则（优先级从高到低）
                 
